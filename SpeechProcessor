@@ -1,0 +1,425 @@
+
+package com.example.myapplication;
+
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ContentResolver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.media.AudioManager;
+import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.ContactsContract;
+import android.provider.Settings;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+import androidx.preference.PreferenceManager;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class SpeechProcessor {
+
+    private static final Map<String, String> APP_PACKAGES = new HashMap<String, String>() {{
+        put("telegram", "org.telegram.messenger");
+        put("youtube", "com.google.android.youtube");
+        put("google", "com.google.android.googlequicksearchbox");
+        put("chrome", "com.android.chrome");
+        put("gmail", "com.google.android.gm");
+        put("maps", "com.google.android.apps.maps");
+        put("google_play", "com.android.vending");
+        put("drive", "com.google.android.apps.docs");
+        put("photos", "com.google.android.apps.photos");
+        put("facebook", "com.facebook.katana");
+        put("instagram", "com.instagram.android");
+        put("whatsapp", "com.whatsapp");
+        put("twitter", "com.twitter.android");
+        put("tiktok", "com.zhiliaoapp.musically");
+        put("viber", "com.viber.voip");
+        put("reddit", "com.reddit.frontpage");
+        put("spotify", "com.spotify.music");
+        put("netflix", "com.netflix.mediaclient");
+        put("zoom", "us.zoom.videomeetings");
+        put("yandex_music", "ru.yandex.music");
+        put("bybit", "com.bybit.app");
+        put("mytonwallet", "com.mytonwallet");
+        put("tonhub", "com.whaleshark.stonfi");
+        put("vk", "com.vkontakte.android");
+        put("tinkoff_bank", "com.idamob.tinkoff.android");
+        put("sberbank", "ru.sberbankmobile");
+        put("camera", "com.android.camera");
+        put("clock", "com.google.android.deskclock");
+        put("discord", "com.discord");
+        put("gallery", "com.android.gallery3d");
+        put("calculator", "com.google.android.calculator");
+        put("ozon", "ru.ozon.app.android");
+        put("photomath", "com.photomath");
+        put("wildberries", "ru.wildberries.ru");
+        put("chrome_remote_desktop", "com.google.chromeremotedesktop");
+        put("gosuslugi", "ru.gosuslugi.mobile");
+        put("2gis", "ru.dublgis.dgismobile");
+        put("yandex_maps", "ru.yandex.yandexmaps");
+        put("yandex_browser", "com.yandex.browser");
+        put("yandex_go", "ru.yandex.taxi");
+        put("yandex_mail", "ru.yandex.mail");
+        put("yandex_disk", "ru.yandex.disk");
+        put("yandex_translate", "ru.yandex.translate");
+        put("yandex_zen", "ru.yandex.zen");
+        put("yandex_keyboard", "ru.yandex.androidkeyboard");
+        put("moscow_metro", "ru.mosmetro.passenger");
+    }};
+
+    private static final long DELAY_BEFORE_RESPONSE = 1000;
+    private static final Map<String, String> commandCache = new HashMap<>();
+    private static final Pattern BLACKLIST_PATTERN = Pattern.compile("[{}?><*#\\$@!%^&.()\\[\\]-_]");
+    private static final String[] BLACKLIST_WORDS = {"badword1", "badword2", "badword3"}; // Добавьте свои слова
+
+    public static void handleRecognizedText(Context context, String recognizedText) {
+        if (recognizedText.toLowerCase().contains("среда стоп")) {
+            // Если команда "среда стоп" является частью предложения, останавливаем озвучивание
+            stopSpeaking(context);
+        } else if (recognizedText.toLowerCase().contains("среда")) {
+            // Если команда "среда" является частью предложения, начинаем слушать следующую команду
+            String command = recognizedText.substring(recognizedText.toLowerCase().indexOf("среда") + 5).trim();
+            if (!command.isEmpty()) {
+                processCommand(context, command, null);
+            } else {
+                // Если команда "среда" не получила вопрос, перезапускаем прослушивание
+                Log.d("SpeechRecognizer", "Команда 'среда' не получила вопрос, перезапускаем прослушивание");
+                restartListeningWithDelay(context);
+            }
+        } else {
+            // Если это не команда "среда", продолжаем прослушивание
+            Log.d("SpeechRecognizer", "Команда не распознана, продолжаем прослушивание");
+            restartListeningWithDelay(context);
+        }
+    }
+
+    public static void processCommand(Context context, String command, LinearLayout chatContainer) {
+        boolean enableHumor = isHumorEnabled(context);
+        String response = MistralAIService.getInstance(context).processCommand(command, enableHumor);
+        TextToSpeechService textToSpeechService = MistralAIService.getInstance(context).getTextToSpeechService();
+        String finalResponse = textToSpeechService.generateResponse(response);
+
+        if (chatContainer == null) {
+            // Если команда была дана голосом, озвучиваем ответ
+            if ("стоп".equalsIgnoreCase(command)) {
+                // Протокол 1: Останавливаем озвучивание
+                stopSpeaking(context);
+            } else if (command.toLowerCase().startsWith("напиши")) {
+                // Протокол 2: Отправляем сообщение в Telegram
+                sendTelegramMessage(context, command);
+            } else if (command.toLowerCase().startsWith("открой ютуб")) {
+                // Протокол 3: Открываем YouTube
+                openYouTube(context);
+            } else if (command.toLowerCase().startsWith("включи музыку")) {
+                // Протокол 4: Включаем музыку
+                playMusic(context);
+            } else if (command.toLowerCase().startsWith("включи любимую музыку")) {
+                // Протокол 5: Включаем любимую музыку
+                playFavoriteMusic(context);
+            } else if (command.toLowerCase().startsWith("открой приложение")) {
+                // Протокол 2: Открываем приложение
+                String appName = command.substring(17).trim().toLowerCase();
+                if (openApplication(context, appName)) {
+                    // Перезапускаем прослушивание после успешного открытия приложения
+                    restartListeningWithDelay(context);
+                } else {
+                    // Если приложение не найдено, озвучиваем сообщение об ошибке
+                    String errorMessage = "Приложение не найдено, могу еще чем-то помочь?";
+                    Intent intent = new Intent(context, VoiceService.class);
+                    intent.putExtra("text_to_speak", finalResponse);
+                    context.startService(intent);
+                    intent.putExtra("text_to_speak", errorMessage);
+                    context.startService(intent);
+                }
+            } else if (command.toLowerCase().startsWith("увеличь громкость")) {
+                // Протокол 6: Увеличиваем громкость
+                increaseVolume(context);
+            } else if (command.toLowerCase().startsWith("уменьши громкость")) {
+                // Протокол 7: Уменьшаем громкость
+                decreaseVolume(context);
+            } else if (command.toLowerCase().startsWith("увеличь яркость")) {
+                // Протокол 8: Увеличиваем яркость экрана
+                increaseBrightness(context);
+            } else if (command.toLowerCase().startsWith("уменьши яркость")) {
+                // Протокол 9: Уменьшаем яркость экрана
+                decreaseBrightness(context);
+            } else if (command.toLowerCase().startsWith("среда какая погода в")) {
+                // Протокол 10: Получаем погоду в указанном городе
+                String city = command.substring(20).trim();
+                String weatherResponse = MistralAIService.getInstance(context).getWeatherForCity(city);
+                Intent intent = new Intent(context, VoiceService.class);
+                intent.putExtra("text_to_speak", weatherResponse);
+                context.startService(intent);
+            } else {
+                // Если команда не распознана, обрабатываем как обычный запрос
+                if (MistralAIService.getInstance(context) != null) {
+                    // Озвучиваем сообщение о поиске ответа
+                    if (enableHumor) {
+                        String introMessage = "Хорошо, а пока я ищу ответ, вот вам ";
+                        String factOrJoke = FactService.getRandomFactOrJoke();
+                        Intent intent = new Intent(context, VoiceService.class);
+                        intent.putExtra("text_to_speak", introMessage + factOrJoke);
+                        context.startService(intent);
+                    }
+
+                    // Задержка перед озвучиванием ответа от MistralAIService
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        MistralAIService.getInstance(context).sendCommand(command);
+                    }, DELAY_BEFORE_RESPONSE);
+                } else {
+                    Log.e("SpeechRecognizer", "MistralAIService не инициализирован");
+                }
+            }
+        } else {
+            // Если команда была дана через чат, добавляем ответ в чат
+            addChatMessage(chatContainer, "Среда: " + finalResponse, false);
+        }
+    }
+
+    private static boolean isHumorEnabled(Context context) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        return prefs.getBoolean("enable_humor", true);
+    }
+
+    private static boolean openApplication(Context context, String appName) {
+        String packageName = APP_PACKAGES.get(appName);
+        if (packageName != null) {
+            PackageManager pm = context.getPackageManager();
+            Intent launchIntent = pm.getLaunchIntentForPackage(packageName);
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(launchIntent);
+                Log.d("SpeechRecognizer", "Приложение " + appName + " открыто");
+                return true;
+            } else {
+                Log.e("SpeechRecognizer", "Приложение " + appName + " не найдено");
+                return false;
+            }
+        } else {
+            Log.e("SpeechRecognizer", "Приложение " + appName + " не найдено");
+            return false;
+        }
+    }
+
+    private static void restartListeningWithDelay(Context context) {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            Intent intent = new Intent(context, SpeechRecognitionService.class);
+            intent.setAction("RESTART_LISTENING");
+            context.startService(intent);
+        }, 500); // Задержка в 500 миллисекунд
+    }
+
+    private static void stopSpeaking(Context context) {
+        Intent intent = new Intent(context, VoiceService.class);
+        intent.setAction("STOP_SPEAKING");
+        context.startService(intent);
+    }
+
+    private static void openYouTube(Context context) {
+        Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage("com.google.android.youtube");
+        if (launchIntent != null) {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(launchIntent);
+        } else {
+            speak(context, "YouTube не установлен");
+            Log.e("SpeechRecognizer", "YouTube не установлен");
+        }
+    }
+
+    private static void playMusic(Context context) {
+        if (isAppInstalled(context, "ru.yandex.music")) {
+            Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage("ru.yandex.music");
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(launchIntent);
+                // Отправляем интент для воспроизведения музыки
+                Intent playIntent = new Intent("com.yandex.music.PLAY");
+                context.sendBroadcast(playIntent);
+            }
+        } else if (isAppInstalled(context, "com.spotify.music")) {
+            Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage("com.spotify.music");
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(launchIntent);
+                // Отправляем интент для воспроизведения музыки
+                Intent playIntent = new Intent("com.spotify.music.PLAY");
+                context.sendBroadcast(playIntent);
+            }
+        } else {
+            speak(context, "Приложение для воспроизведения музыки не найдено");
+            Log.e("SpeechRecognizer", "Приложение для воспроизведения музыки не найдено");
+        }
+    }
+
+    private static boolean isAppInstalled(Context context, String packageName) {
+        PackageManager pm = context.getPackageManager();
+        try {
+            pm.getPackageInfo(packageName, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    private static void playFavoriteMusic(Context context) {
+        if (isAppInstalled(context, "ru.yandex.music")) {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse("yandexmusic://user/likes")); // Проверьте актуальность URI в документации Яндекс Музыки
+            intent.setPackage("ru.yandex.music");
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (intent.resolveActivity(context.getPackageManager()) != null) {
+                context.startActivity(intent);
+            } else {
+                speak(context, "Не удалось открыть раздел 'Мне нравится' в Яндекс Музыке");
+                Log.e("SpeechRecognizer", "Не удалось открыть раздел 'Мне нравится' в Яндекс Музыке");
+            }
+        } else {
+            speak(context, "Яндекс Музыка не установлена");
+            Log.e("SpeechRecognizer", "Яндекс Музыка не установлена");
+        }
+    }
+
+    private static void sendTelegramMessage(Context context, String command) {
+        // Парсим имя контакта и текст сообщения из команды
+        Pattern pattern = Pattern.compile("напиши\\s+(.*?)\\s+сообщение цитирую\\s+\"(.*)\"");
+        Matcher matcher = pattern.matcher(command);
+        if (matcher.find()) {
+            String contactName = matcher.group(1).trim();
+            String messageText = matcher.group(2).trim();
+
+            // Получаем список контактов
+            String phoneNumber = getPhoneNumberByName(context, contactName);
+            if (phoneNumber != null) {
+                // Открываем Telegram с указанным контактом
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setData(Uri.parse("tg://resolve?phone=" + phoneNumber));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (intent.resolveActivity(context.getPackageManager()) != null) {
+                    // Копируем текст сообщения в буфер обмена
+                    ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+                    ClipData clip = ClipData.newPlainText("Сообщение", messageText);
+                    clipboard.setPrimaryClip(clip);
+
+                    // Сообщаем пользователю
+                    speak(context, "Сообщение скопировано в буфер обмена. Вставьте его в чате.");
+                    Log.d("SpeechRecognizer", "Сообщение скопировано в буфер обмена. Вставьте его в чате.");
+
+                    context.startActivity(intent);
+                } else {
+                    speak(context, "Telegram не установлен");
+                    Log.e("SpeechRecognizer", "Telegram не установлен");
+                }
+            } else {
+                speak(context, "Контакт не найден");
+                Log.e("SpeechRecognizer", "Контакт не найден");
+            }
+        } else {
+            speak(context, "Не удалось распознать команду");
+            Log.e("SpeechRecognizer", "Не удалось распознать команду");
+        }
+    }
+
+    private static String getPhoneNumberByName(Context context, String name) {
+        String phoneNumber = null;
+        ContentResolver cr = context.getContentResolver();
+        Cursor cursor = cr.query(ContactsContract.Contacts.CONTENT_URI, null,
+                "DISPLAY_NAME LIKE ?", new String[]{"%" + name + "%"}, null);
+        if (cursor != null && cursor.moveToFirst()) {
+            String contactId = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts._ID));
+            Cursor phones = cr.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, null,
+                    ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = ?", new String[]{contactId}, null);
+            if (phones != null && phones.moveToFirst()) {
+                phoneNumber = phones.getString(phones.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER));
+                phones.close();
+            }
+            cursor.close();
+        }
+        return phoneNumber;
+    }
+
+    private static void speak(Context context, String message) {
+        Intent intent = new Intent(context, VoiceService.class);
+        intent.putExtra("text_to_speak", message);
+        context.startService(intent);
+        Log.d("SpeechRecognizer", message);
+    }
+
+    private static void addChatMessage(LinearLayout container, String message, boolean isUser) {
+        TextView textView = new TextView(container.getContext());
+        textView.setText(message);
+        textView.setPadding(16, 8, 16, 8);
+        if (isUser) {
+            textView.setBackgroundResource(R.drawable.chat_bubble_user);
+            textView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            ((LinearLayout.LayoutParams) textView.getLayoutParams()).gravity = Gravity.END;
+        } else {
+            textView.setBackgroundResource(R.drawable.chat_bubble_assistant);
+            textView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            ((LinearLayout.LayoutParams) textView.getLayoutParams()).gravity = Gravity.START;
+        }
+        container.addView(textView);
+    }
+
+    private static void increaseVolume(Context context) {
+        AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager != null) {
+            int currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+            int maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            if (currentVolume < maxVolume) {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, currentVolume + 1, 0);
+                speak(context, "Громкость увеличена");
+            } else {
+                speak(context, "Громкость уже на максимуме");
+            }
+        }
+    }
+
+    private static void decreaseVolume(Context context) {
+        AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        if (audioManager != null) {
+            int currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+            if (currentVolume > 0) {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, currentVolume - 1, 0);
+                speak(context, "Громкость уменьшена");
+            } else {
+                speak(context, "Громкость уже на минимуме");
+            }
+        }
+    }
+
+    private static void increaseBrightness(Context context) {
+        Settings.System.putInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+        int currentBrightness = Settings.System.getInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, 0);
+        int maxBrightness = 255;
+        if (currentBrightness < maxBrightness) {
+            Settings.System.putInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, currentBrightness + 25);
+            speak(context, "Яркость увеличена");
+        } else {
+            speak(context, "Яркость уже на максимуме");
+        }
+    }
+
+    private static void decreaseBrightness(Context context) {
+        Settings.System.putInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+        int currentBrightness = Settings.System.getInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, 0);
+        if (currentBrightness > 0) {
+            Settings.System.putInt(context.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, currentBrightness - 25);
+            speak(context, "Яркость уменьшена");
+        } else {
+            speak(context, "Яркость уже на минимуме");
+        }
+    }
+}
+
