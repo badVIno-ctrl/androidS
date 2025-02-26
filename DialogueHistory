@@ -1,0 +1,77 @@
+package com.example.myapplication;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import androidx.preference.PreferenceManager;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+import java.lang.reflect.Type;
+import java.util.LinkedList;
+import java.util.Queue;
+
+public class DialogueHistory {
+    private static final int MAX_HISTORY_SIZE = 5;
+    private Queue<DialoguePair> history;
+    private Context context;
+
+    public DialogueHistory(Context context) {
+        this.context = context;
+        history = new LinkedList<>();
+        loadHistory();
+    }
+
+    public void addDialogue(String userMessage, String assistantResponse) {
+        if (history.size() >= MAX_HISTORY_SIZE) {
+            history.poll();
+        }
+        history.add(new DialoguePair(userMessage, assistantResponse));
+        saveHistory();
+    }
+
+    public Queue<DialoguePair> getHistory() {
+        return history;
+    }
+
+    public void clearHistory() {
+        history.clear();
+        saveHistory();
+    }
+
+    private void saveHistory() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        SharedPreferences.Editor editor = prefs.edit();
+        Gson gson = new Gson();
+        String json = gson.toJson(history);
+        editor.putString("dialogue_history", json);
+        editor.apply();
+    }
+
+    private void loadHistory() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        Gson gson = new Gson();
+        String json = prefs.getString("dialogue_history", null);
+        Type type = new TypeToken<Queue<DialoguePair>>() {}.getType();
+        history = gson.fromJson(json, type);
+        if (history == null) {
+            history = new LinkedList<>();
+        }
+    }
+
+    public static class DialoguePair {
+        private String userMessage;
+        private String assistantResponse;
+
+        public DialoguePair(String userMessage, String assistantResponse) {
+            this.userMessage = userMessage;
+            this.assistantResponse = assistantResponse;
+        }
+
+        public String getUserMessage() {
+            return userMessage;
+        }
+
+        public String getAssistantResponse() {
+            return assistantResponse;
+        }
+    }
+}
