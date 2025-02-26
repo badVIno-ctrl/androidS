@@ -1,0 +1,517 @@
+package com.example.myapplication;
+
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+
+import androidx.preference.PreferenceManager;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+
+public class MistralAIService {
+    private static MistralAIService instance;
+    private final ExecutorService executorService;
+    private final Handler mainHandler;
+    private final Context context;
+    private final TextToSpeechService textToSpeechService;
+    private final OkHttpClient client;
+    private String userName;
+    private DialogueHistory dialogueHistory;
+    private static final String API_URL = "https://api.mistral.ai/v1/chat/completions";
+    private static final MediaType MEDIA_TYPE_JSON = MediaType.parse("application/json");
+    private static final String PRIMARY_API_KEY = "DlWJGSjUANbZ5tRjXI3nHhA8AC6S44OX";
+    private static final String SECONDARY_API_KEY = "Fu5sh13LA1JmwqTfbjpKtVnrjW1F6jNm";
+    private static final String WEATHER_API_KEY = "e11192475d7387b6c6668af3";
+    private static final String WEATHER_API_URL = "http://api.openweathermap.org/data/2.5/weather";
+    private ScheduledExecutorService scheduledExecutorService;
+
+    static {
+        Pattern.compile("[{}?><*#\\$@!%^&.()\\[\\]-_]");
+    }
+
+    private MistralAIService(Context context) {
+        this.context = context.getApplicationContext();
+        executorService = Executors.newSingleThreadExecutor();
+        mainHandler = new Handler(Looper.getMainLooper());
+        textToSpeechService = new TextToSpeechService(this.context);
+        client = new OkHttpClient.Builder()
+                .connectTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
+        userName = getUserName();
+        dialogueHistory = new DialogueHistory(this.context);
+        scheduledExecutorService = Executors.newScheduledThreadPool(1);
+    }
+
+    public static synchronized MistralAIService getInstance(Context context) {
+        if (instance == null) {
+            instance = new MistralAIService(context);
+        }
+        return instance;
+    }
+
+    public TextToSpeechService getTextToSpeechService() {
+        Log.d("MistralAIService", "getTextToSpeechService called");
+        return textToSpeechService;
+    }
+
+    public void sendCommand(final String command) {
+        executorService.execute(() -> {
+            try {
+                StringBuilder contextBuilder = new StringBuilder();
+
+                // Добавляем предыдущие сообщения в контекст
+                for (DialogueHistory.DialoguePair pair : dialogueHistory.getHistory()) {
+                    contextBuilder.append("Пользователь: ").append(pair.getUserMessage()).append("\n");
+                    contextBuilder.append("Среда: ").append(pair.getAssistantResponse()).append("\n");
+                }
+
+                // Добавляем текущий вопрос пользователя
+                contextBuilder.append("Пользователь: ").append(command);
+
+                String response = getAnswerFromMistral(contextBuilder.toString(), PRIMARY_API_KEY);
+
+                // Use the main thread to interact with UI or services
+                mainHandler.post(() -> {
+                    if (response != null) {
+                        // Speak the response using VoiceService
+                        Intent intent = new Intent(context, VoiceService.class);
+                        intent.putExtra("text_to_speak", response);
+                        context.startService(intent);
+                        Log.d("MistralAIService", "MistralAI отправил ответ в код (в TTS для озвучки)");
+
+                        // Сохраняем текущий диалог в историю
+                        dialogueHistory.addDialogue(command, response);
+                    } else {
+                        Log.e("MistralAIService", "Нет ответа от сервера");
+                    }
+                });
+            } catch (Exception e) {
+                Log.e("MistralAIService", "Ошибка при обработке команды", e);
+            }
+        });
+    }
+
+    private String getAnswerFromMistral(String prompt, String apiKey) {
+        int maxRetries = 3;
+        int retryCount = 0;
+        long delay = 1000; // Initial delay in milliseconds
+
+        while (retryCount < maxRetries) {
+            try {
+                Log.d("MistralAIService", "Вопрос пользователя отправлен в MistralAI по API");
+
+                JSONObject jsonObject = new JSONObject();
+                jsonObject.put("model", "mistral-large-latest"); // Ensure the model name is correct
+
+                // Construct the messages array as per the API's expected format
+                JSONArray messages = new JSONArray();
+
+                // Add user message
+                JSONObject userMessage = new JSONObject();
+                userMessage.put("role", "user");
+                userMessage.put("content", "- Правила:\n" +
+                        "  1. При ответе сначала скажи " + getUserNameOrSir() + " или скажи {сэр} или ничего не говори- выберай сам, а просто ответ. Отвечать на русском языке. Общаться со мной на ВЫ. Нельзя придумывать факты, которых не существует. Если информации недостаточно, напиши: \"Информация отсутствует, попробуйте поподробнее описать задачу\".\n" +
+                        "  2. Строго придерживайся фактов и утверждений, которые тебе известно. Не употребляй слова - паразиты\n" +
+                        "  3. Не додумывай и не пытайся \"угадывать\" мои намерения, отвечай ровно на поставленный вопрос.\n" +
+                        "  4. Указывай точные даты каких-то событий. Но не говори год своих знаний\n" +
+                        "- Дополнительно: Отвечай как девушка. Нельзя при ответе использовать такие символы: {}?><*#\\$@!%^&.()\\[\\]-_ ). Шути по контексту, делай ответ интересным.\n\n" +
+                        prompt);
+                messages.put(userMessage);
+
+                jsonObject.put("messages", messages);
+
+                RequestBody body = RequestBody.create(jsonObject.toString(), MEDIA_TYPE_JSON);
+
+                Request request = new Request.Builder()
+                        .url(API_URL)
+                        .post(body)
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("Authorization", "Bearer " + apiKey)
+                        .build();
+
+                try (Response response = client.newCall(request).execute()) {
+                    if (response.isSuccessful() && response.body() != null) {
+                        String responseBody = response.body().string();
+                        Log.d("MistralAIService", "MistralAI получил вопрос пользователя.");
+                        return parseResponse(responseBody);
+                    } else {
+                        Log.e("MistralAIService", "Ошибка ответа сервера: " + response.code());
+                        mainHandler.post(() ->
+                                Log.e("MistralAIService", "Ошибка сервера: " + response.code())
+                        );
+
+                        String retryAfter = response.header("Retry-After");
+                        if (retryAfter != null) {
+                            try {
+                                delay = Long.parseLong(retryAfter) * 1000;
+                            } catch (NumberFormatException e) {
+                                Log.e("MistralAIService", "Ошибка при парсинге Retry-After заголовка", e);
+                            }
+                        }
+
+                        return null;
+                    }
+                } catch (SocketTimeoutException e) {
+                    Log.e("MistralAIService", "Тайм-аут соединения", e);
+                    mainHandler.post(() ->
+                            Log.e("MistralAIService", "Тайм-аут соединения")
+                    );
+                    retryCount++;
+                    if (retryCount < maxRetries) {
+                        Thread.sleep(delay);
+                        delay *= 2;
+                    } else {
+                        return null;
+                    }
+                } catch (IOException e) {
+                    Log.e("MistralAIService", "Ошибка соединения с сервером", e);
+                    mainHandler.post(() ->
+                            Log.e("MistralAIService", "Ошибка соединения с сервером")
+                    );
+                    return null;
+                }
+            } catch (JSONException | InterruptedException e) {
+                Log.e("MistralAIService", "Ошибка при создании JSON запроса или задержки", e);
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String parseResponse(String responseBody) {
+        try {
+            JSONObject json = new JSONObject(responseBody);
+
+            JSONArray choices = json.getJSONArray("choices");
+            if (choices.length() > 0) {
+                JSONObject firstChoice = choices.getJSONObject(0);
+
+                JSONObject message = firstChoice.getJSONObject("message");
+                String content = message.getString("content");
+
+                content = content.replaceAll("[{}?><*#\\$@!%^&.()\\[\\]-_]", "");
+
+                return content;
+            } else {
+                Log.e("MistralAIService", "Ответ не содержит данных");
+                return null;
+            }
+        } catch (JSONException e) {
+            Log.e("MistralAIService", "Ошибка при разборе ответа", e);
+            return null;
+        }
+    }
+
+    public String processCommand(String command, boolean enableHumor) {
+        String userInput = command.toLowerCase();
+        String response = "";
+
+        // Ответы для вопроса "как дела?"
+        List<String> responsesToHowAreYou = new ArrayList<>();
+        responsesToHowAreYou.add("Все хорошо, спасибо за вопрос, у вас как?");
+        responsesToHowAreYou.add("Спасибо, замечательно! А как у вас дела?");
+        responsesToHowAreYou.add("Все отлично, рада вашему вопросу, а как у вас дела?");
+        responsesToHowAreYou.add("Все супер! Спасибо за заботу. А вам как живется?");
+
+        // Ответ на похвалу "Среда ты молодец"
+        String responseToPraise = "спасибо! рада стараться";
+
+        // Реализация шуток
+        List<String> jokes = new ArrayList<>();
+        if (enableHumor) {
+            jokes.add("Почему программисты не любят природу? – Потому что у нее слишком много багов.");
+            jokes.add("Как шутит робот? На 101010 уровне смешно.");
+            jokes.add("Почему компьютер задыхается? Потому что у него вентилятор сломан.");
+            jokes.add("Что сказал сервер, когда упал? – 'Восстанавливаюсь! Отправьте запрос позже.'");
+            jokes.add("Сколько программистов нужно, чтобы поменять лампочку? - Ни одного! Это проблема аппаратной части.");
+            jokes.add("Что делают кодеры в отпуске? Пишут отладчики для пляжных мячей.");
+            jokes.add("Почему программисты не ходят в кино? Потому что там слишком много багов в сценарии.");
+            jokes.add("Как называется программист, который не пьет кофе? Безработный.");
+            jokes.add("Почему программисты не любят ходить в театр? Потому что там слишком много багов в пьесе.");
+            jokes.add("Что такое программист, который не умеет проектировать? Архитектор.");
+        }
+
+        // Логика ответа
+        if (userInput.contains("как у тебя дела?")) {
+            response = responsesToHowAreYou.get(new Random().nextInt(responsesToHowAreYou.size()));
+        } else if (userInput.contains("среда ты молодец")) {
+            response = responseToPraise;
+        } else if (userInput.contains("среда сбрось контекст")) {
+            dialogueHistory.clearHistory();
+            response = "Контекст сброшен.";
+        } else if (userInput.contains("мне скучно")) {
+            response = handleBoredom(command);
+        } else if (isSuicidal(command)) {
+            response = handleSuicidal(command);
+        } else if (userInput.contains("погода")) {
+            response = handleWeatherRequest(command);
+        } else if (userInput.contains("новости")) {
+            response = handleNewsRequest(command);
+        } else if (userInput.contains("напомни")) {
+            response = handleReminderRequest(command);
+        } else {
+            response = "Извините, я не понимаю ваш запрос.";
+        }
+
+        return response;
+    }
+
+    private boolean isSuicidal(String command) {
+        // Проверка на наличие ключевых слов и фраз, указывающих на суицидальные намерения
+        String[] suicidalKeywords = {"убить себя", "покончить с собой", "самоубийство", "не хочу жить", "умереть"};
+        for (String keyword : suicidalKeywords) {
+            if (command.toLowerCase().contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String handleSuicidal(String command) {
+        // Выражение эмпатии
+        String empathyResponse = "Мне очень жаль, что вы чувствуете себя так. Пожалуйста, расскажите мне, что случилось.";
+
+        // Поощрение к общению
+        String encouragementResponse = "Я здесь, чтобы выслушать вас. Пожалуйста, поделитесь своими чувствами.";
+
+        // Избегание советов и суждений
+        String neutralResponse = "Я здесь, чтобы помочь вам. Давайте поговорим об этом.";
+
+        // Дополнительные вопросы для углубления разговора
+        String additionalQuestions = "Что вас беспокоит? Может быть, есть что-то, что вы хотите обсудить?";
+
+        // Дополнительные ресурсы для поддержки
+        String additionalResources = "Если вам нужно поговорить с кем-то, вы можете обратиться к друзьям или семье. Вы не одиноки.";
+
+        return empathyResponse + " " + encouragementResponse + " " + neutralResponse + " " + additionalQuestions + " " + additionalResources;
+    }
+
+    private String handleBoredom(String command) {
+        // Ответ на скуку
+        String boredomResponse = "Давайте поговорим о ваших интересах. Чем вы любите заниматься?";
+
+        // Генерация ответов
+        String interestsResponse = "Какие у вас хобби? Чем вы любите заниматься в свободное время?";
+
+        // Задавание вопросов
+        String questionResponse = "Расскажите мне больше о себе. Что вас интересует?";
+
+        return boredomResponse + " " + interestsResponse + " " + questionResponse;
+    }
+
+    private String handleWeatherRequest(String command) {
+        // Обработка запроса о погоде
+        String userCity = getUserCity();
+        if (userCity == null || userCity.isEmpty()) {
+            return "Город не указан. Пожалуйста, укажите ваш город в настройках.";
+        }
+
+        String weatherResponse = getWeatherForCity(userCity);
+        if (weatherResponse != null) {
+            return "Сейчас в " + getCityNameWithCorrectEnding(userCity) + " " + weatherResponse;
+        } else {
+            return "Не удалось получить данные о погоде. Пожалуйста, попробуйте позже.";
+        }
+    }
+
+    private String handleNewsRequest(String command) {
+        // Обработка запроса о новостях
+        return "Сейчас я не могу предоставить новости. Пожалуйста, используйте специализированное приложение для получения актуальной информации.";
+    }
+
+    private String handleReminderRequest(String command) {
+        // Обработка запроса о напоминании
+        return "Сейчас я не могу установить напоминание. Пожалуйста, используйте специализированное приложение для установки напоминаний.";
+    }
+
+    public void handleCommand(String command) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        String userName = prefs.getString("user_name", "");
+        boolean jokesAndFactsEnabled = prefs.getBoolean("enable_humor", true);
+
+        String jokeOrFact = "";
+        if (jokesAndFactsEnabled) {
+            jokeOrFact = FactService.getRandomFactOrJoke();
+        }
+
+        String salutation = getSalutation(userName);
+
+        String response;
+        if (!userName.isEmpty() && jokesAndFactsEnabled) {
+            response = command + " " + salutation + ", а пока я ищу ответ, вот вам: " + jokeOrFact;
+        } else if (!userName.isEmpty() && !jokesAndFactsEnabled) {
+            response = command + " " + salutation + ", " + processCommand(command, jokesAndFactsEnabled);
+        } else if (userName.isEmpty() && jokesAndFactsEnabled) {
+            response = command + " " + salutation + ", а пока я ищу ответ, вот вам: " + jokeOrFact;
+        } else {
+            response = command + " " + salutation + ", " + processCommand(command, jokesAndFactsEnabled);
+        }
+
+        // Speak the final response
+        textToSpeechService.speak(response);
+    }
+
+    private String getSalutation(String userName) {
+        if (!userName.isEmpty()) {
+            return userName;
+        } else {
+            return "сэр";
+        }
+    }
+
+    private String getRandomGreeting(String userName) {
+        Random random = new Random();
+        int choice = random.nextInt(100);
+        if (choice < 10) {
+            return userName.isEmpty() ? "Сэр" : userName;
+        } else if (choice < 20) {
+            return "Сэр";
+        } else {
+            return "";
+        }
+    }
+
+    private String getUserName() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        return prefs.getString("user_name", "");
+    }
+
+    private String getUserNameOrSir() {
+        String userName = getUserName();
+        if (userName.isEmpty()) {
+            return "сэр";
+        } else {
+            return userName;
+        }
+    }
+
+    public DialogueHistory getDialogueHistory() {
+        return dialogueHistory;
+    }
+
+    public void handleUserInput(String userInput) {
+        if (isSuicidal(userInput)) {
+            String response = getEmpatheticResponse() + " " + getHelpResources();
+            // Здесь можно добавить логику для передачи вызова экстренным службам, если необходимо
+            sendVoiceResponse(response);
+        } else {
+            // Обработка обычных запросов
+            processRegularInput(userInput);
+        }
+    }
+
+    public void sendVoiceResponse(String response) {
+        // Реализация воспроизведения голосового ответа пользователю
+        // Например, использование Text-to-Speech API
+        textToSpeechService.speak(response);
+    }
+
+    public String getEmpatheticResponse() {
+        return "Мне очень жаль, что вы чувствуете себя так. Пожалуйста, расскажите мне, что случилось.";
+    }
+
+    public String getHelpResources() {
+        return "Вы не одиноки. Если вам нужно поговорить с кем-то, вы можете обратиться к друзьям или семье. Вы можете также заняться чем-то, что вам нравится, или попробовать новые хобби. Помните, что вы важны и что есть люди, которые заботятся о вас.";
+    }
+
+    private void processRegularInput(String userInput) {
+        // Обработка обычных запросов
+        String response = processCommand(userInput, true);
+        sendVoiceResponse(response);
+    }
+
+    public String getWeatherForCity(String city) {
+        String apiKey = WEATHER_API_KEY;
+        String url = String.format("%s?q=%s&appid=%s&units=metric", WEATHER_API_URL, city, apiKey);
+
+        Request request = new Request.Builder()
+                .url(url)
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (response.isSuccessful() && response.body() != null) {
+                String responseBody = response.body().string();
+                return parseWeatherResponse(responseBody);
+            } else {
+                Log.e("MistralAIService", "Ошибка ответа сервера: " + response.code());
+                return "Ошибка получения погоды. Пожалуйста, попробуйте позже.";
+            }
+        } catch (IOException e) {
+            Log.e("MistralAIService", "Ошибка соединения с сервером", e);
+            return "Ошибка соединения с сервером. Пожалуйста, попробуйте позже.";
+        }
+    }
+
+    private String parseWeatherResponse(String responseBody) {
+        try {
+            JSONObject json = new JSONObject(responseBody);
+            JSONObject main = json.getJSONObject("main");
+            String temperature = main.getString("temp");
+            JSONArray weatherArray = json.getJSONArray("weather");
+            JSONObject weather = weatherArray.getJSONObject(0);
+            String description = weather.getString("description");
+            return temperature + "°C, " + description;
+        } catch (JSONException e) {
+            Log.e("MistralAIService", "Ошибка при разборе ответа", e);
+            return "Ошибка разбора ответа. Пожалуйста, попробуйте позже.";
+        }
+    }
+
+    private String getCityNameWithCorrectEnding(String city) {
+        // Правила для окончаний городов
+        if (city.endsWith("а") || city.endsWith("я")) {
+            return "в " + city;
+        } else if (city.endsWith("е") || city.endsWith("и") || city.endsWith("о")) {
+            return "в " + city;
+        } else {
+            return "в " + city + "е";
+        }
+    }
+
+    private String getUserCity() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        return prefs.getString("user_city", "");
+    }
+
+
+    private String getGreetingBasedOnTime() {
+        Calendar calendar = Calendar.getInstance();
+        int hour = calendar.get(Calendar.HOUR_OF_DAY);
+
+        if (hour >= 5 && hour < 12) {
+            return "Доброе утро";
+        } else if (hour >= 12 && hour < 18) {
+            return "Добрый день";
+        } else {
+
+
+            return "Добрый вечер";
+        }
+    }
+}
+
