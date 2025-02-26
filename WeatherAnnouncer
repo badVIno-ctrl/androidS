@@ -1,0 +1,87 @@
+package com.example.myapplication;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.preference.PreferenceManager;
+import android.util.Log;
+
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Calendar;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+public class WeatherAnnouncer {
+
+    private final Context context;
+    private final ScheduledExecutorService scheduler;
+
+    public WeatherAnnouncer(Context context) {
+        this.context = context;
+        this.scheduler = Executors.newScheduledThreadPool(1);
+    }
+
+    public void scheduleWeatherAnnouncement(int hour, int minute) {
+        Runnable task = () -> {
+            String weatherInfo = getWeatherInfo();
+            if (weatherInfo != null) {
+                speakWeather(weatherInfo);
+            }
+        };
+
+        Calendar calendar = Calendar.getInstance();
+        calendar.set(Calendar.HOUR_OF_DAY, hour);
+        calendar.set(Calendar.MINUTE, minute);
+        calendar.set(Calendar.SECOND, 0);
+
+        if (calendar.getTimeInMillis() < System.currentTimeMillis()) {
+            calendar.add(Calendar.DAY_OF_MONTH, 1);
+        }
+
+        long initialDelay = calendar.getTimeInMillis() - System.currentTimeMillis();
+        scheduler.scheduleWithFixedDelay(task, initialDelay, TimeUnit.DAYS.toMillis(1), TimeUnit.MILLISECONDS);
+    }
+
+    private String getWeatherInfo() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        String city = prefs.getString("user_city", "");
+        String userName = prefs.getString("user_name", "");
+
+        if (city.isEmpty()) {
+            Log.e("WeatherAnnouncer", "Город не указан в настройках.");
+            return null;
+        }
+
+        String weatherResponse = MistralAIService.getInstance(context).getWeatherForCity(city);
+        if (weatherResponse != null) {
+            String greeting = getGreetingBasedOnTime();
+            return String.format("%s, %s. Сегодня в городе %s %s.", greeting, userName, city, weatherResponse);
+        } else {
+            Log.e("WeatherAnnouncer", "Не удалось получить данные о погоде.");
+            return null;
+        }
+    }
+
+    private String getGreetingBasedOnTime() {
+        Calendar calendar = Calendar.getInstance();
+        int hour = calendar.get(Calendar.HOUR_OF_DAY);
+
+        if (hour >= 5 && hour < 12) {
+            return "Доброе утро";
+        } else if (hour >= 12 && hour < 18) {
+            return "Добрый день";
+        } else {
+            return "Добрый вечер";
+        }
+    }
+
+    private void speakWeather(String text) {
+        TextToSpeechService textToSpeechService = MistralAIService.getInstance(context).getTextToSpeechService();
+        textToSpeechService.speak(text);
+    }
+}
