@@ -1,0 +1,135 @@
+package com.example.myapplication;
+
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Bundle;
+import android.text.Spannable;
+import android.text.SpannableString;
+import android.text.method.LinkMovementMethod;
+import android.text.style.ClickableSpan;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import android.view.View;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.appcompat.app.AppCompatActivity;
+
+public class SredaActivity extends AppCompatActivity {
+
+    private GestureDetector gestureDetector;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_sreda);
+
+        // Установка обработчика нажатия для кнопки "Назад"
+        findViewById(R.id.btn_back).setOnClickListener(v -> finish());
+
+        // Настройка кликабельных ссылок в TextView
+        TextView tvDeveloperBlog = findViewById(R.id.tv_developer_blog);
+
+        String blogText = "блог разработчика - https://t.me/dkdkdjsjp\nподдержка - @BasantroVI";
+        SpannableString spannableString = new SpannableString(blogText);
+
+        ClickableSpan blogLinkSpan = new ClickableSpan() {
+            @Override
+            public void onClick(View widget) {
+                copyToClipboard("https://t.me/dkdkdjsjp");
+            }
+        };
+
+        ClickableSpan supportLinkSpan = new ClickableSpan() {
+            @Override
+            public void onClick(View widget) {
+                copyToClipboard("@BasantroVI");
+            }
+        };
+
+        // Убедимся, что индексы корректны
+        spannableString.setSpan(blogLinkSpan, 18, 42, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        spannableString.setSpan(supportLinkSpan, 55, 66, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+
+        tvDeveloperBlog.setText(spannableString);
+        tvDeveloperBlog.setMovementMethod(LinkMovementMethod.getInstance());
+
+        // Инициализация GestureDetector
+        gestureDetector = new GestureDetector(this, new GestureListener());
+
+        // Установка OnTouchListener на корневой View
+        findViewById(R.id.root_view).setOnTouchListener((v, event) -> gestureDetector.onTouchEvent(event));
+    }
+
+    private void copyToClipboard(String text) {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        ClipData clip = ClipData.newPlainText("label", text);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(clip);
+            Toast.makeText(this, "Скопировано в буфер обмена: " + text, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private class GestureListener extends GestureDetector.SimpleOnGestureListener {
+        private static final int SWIPE_THRESHOLD = 100;
+        private static final int SWIPE_VELOCITY_THRESHOLD = 100;
+
+        @Override
+        public boolean onDown(MotionEvent e) {
+            return true; // Нужно вернуть true, чтобы распознать событие
+        }
+
+        @Override
+        public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+            float diffX = e2.getX() - e1.getX();
+            float diffY = e2.getY() - e1.getY();
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                // Горизонтальный свайп
+                if (Math.abs(diffX) > SWIPE_THRESHOLD && Math.abs(velocityX) > SWIPE_VELOCITY_THRESHOLD) {
+                    if (diffX > 0) {
+                        onSwipeRight();
+                    } else {
+                        onSwipeLeft();
+                    }
+                    return true;
+                }
+            } else {
+                // Вертикальный свайп
+                if (Math.abs(diffY) > SWIPE_THRESHOLD && Math.abs(velocityY) > SWIPE_VELOCITY_THRESHOLD) {
+                    if (diffY > 0) {
+                        onSwipeDown();
+                    } else {
+                        onSwipeUp();
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    private void onSwipeRight() {
+        // Действие при свайпе вправо
+        returnToHomeFragment();
+    }
+
+    private void onSwipeLeft() {
+        // Действие при свайпе влево
+    }
+
+    private void onSwipeUp() {
+        // Действие при свайпе вверх
+    }
+
+    private void onSwipeDown() {
+        // Действие при свайпе вниз
+    }
+
+    private void returnToHomeFragment() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.putExtra("fragmentToLoad", "HomeFragment");
+        startActivity(intent);
+        finish();
+    }
+}
