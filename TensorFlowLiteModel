@@ -1,0 +1,36 @@
+package com.example.myapplication;
+
+import org.tensorflow.lite.Interpreter;
+
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+import java.io.FileInputStream;
+import java.io.IOException;
+
+public class TensorFlowLiteModel {
+    private Interpreter tflite;
+
+    public TensorFlowLiteModel(String modelPath) {
+        try {
+            tflite = new Interpreter(loadModelFile(modelPath));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private MappedByteBuffer loadModelFile(String modelPath) throws IOException {
+        FileInputStream fileInputStream = new FileInputStream(modelPath);
+        FileChannel fileChannel = fileInputStream.getChannel();
+        long startOffset = 0;
+        long declaredLength = fileChannel.size();
+        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+    }
+
+    public float[] runInference(float[] input) {
+        // Пример выполнения инференса
+        float[] output = new float[2]; // Пример для бинарной классификации
+        // Здесь должна быть логика выполнения инференса
+        tflite.run(input, output); // Пример вызова инференса
+        return output;
+    }
+}
