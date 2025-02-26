@@ -1,0 +1,96 @@
+package com.example.myapplication;
+
+import android.app.Service;
+import android.content.Intent;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.MediaRecorder;
+import android.os.IBinder;
+import android.util.Base64;
+import android.util.Log;
+
+import androidx.annotation.Nullable;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class AudioRecordingService extends Service {
+    private static final int SAMPLE_RATE = 44100;
+    private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
+    private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+    private static final int BUFFER_SIZE = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
+
+    private AudioRecord audioRecord;
+    private boolean isRecording = false;
+    private ExecutorService executorService;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        executorService = Executors.newSingleThreadExecutor();
+        startAudioRecording();
+    }
+
+    private void startAudioRecording() {
+        audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT, BUFFER_SIZE);
+
+        if (audioRecord.getState() == AudioRecord.STATE_INITIALIZED) {
+            audioRecord.startRecording();
+            isRecording = true;
+            executorService.execute(new Runnable() {
+                @Override
+                public void run() {
+                    recordAudio();
+                }
+            });
+        } else {
+            Log.e("AudioRecordingService", "Failed to initialize AudioRecord");
+        }
+    }
+
+    private void recordAudio() {
+        short[] buffer = new short[BUFFER_SIZE];
+        while (isRecording) {
+            int readSize = audioRecord.read(buffer, 0, BUFFER_SIZE);
+            if (readSize > 0) {
+                byte[] audioData = shortToByte(buffer, readSize);
+                String base64Audio = Base64.encodeToString(audioData, Base64.DEFAULT);
+                // Отправляйте base64Audio на обработку или сохранение
+                Log.d("AudioRecordingService", "Audio data: " + base64Audio);
+            }
+        }
+    }
+
+    private byte[] shortToByte(short[] shortArray, int size) {
+        byte[] byteArray = new byte[size * 2];
+        for (int i = 0; i < size; i++) {
+            byteArray[i * 2] = (byte) (shortArray[i] & 0x00FF);
+            byteArray[i * 2 + 1] = (byte) ((shortArray[i] >> 8) & 0x00FF);
+        }
+        return byteArray;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        stopAudioRecording();
+        if (executorService != null) {
+            executorService.shutdown();
+        }
+    }
+
+    private void stopAudioRecording() {
+        if (audioRecord != null) {
+            isRecording = false;
+            audioRecord.stop();
+            audioRecord.release();
+            audioRecord = null;
+        }
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+}
