@@ -1,0 +1,228 @@
+package com.example.myapplication;
+
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import androidx.appcompat.app.AppCompatActivity;
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
+
+public class ChatActivity extends AppCompatActivity {
+
+    private LinearLayout chatContainer;
+    private EditText messageInput;
+    private Button sendButton;
+    private Button clearHistoryButton;
+    private Button btnBack;
+    private OkHttpClient client;
+    private DialogueHistory dialogueHistory;
+    private static final MediaType MEDIA_TYPE_JSON = MediaType.parse("application/json");
+    private static final String API_URL = "https://api.mistral.ai/v1/chat/completions";
+    private static final String PRIMARY_API_KEY = "DlWJGSjUANbZ5tRjXI3nHhA8AC6S44OX"; // Ваш API ключ
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_chat);
+
+        // Инициализация UI элементов
+        initViews();
+
+        // Инициализация OkHttpClient
+        initOkHttpClient();
+
+        // Инициализация истории диалога
+        initDialogueHistory();
+
+        // Отображение предыдущих сообщений
+        displayPreviousMessages();
+
+        // Обработка нажатий на кнопки
+        setupButtonClicks();
+    }
+
+    private void initViews() {
+        chatContainer = findViewById(R.id.chat_container);
+        messageInput = findViewById(R.id.message_input);
+        sendButton = findViewById(R.id.send_button);
+        clearHistoryButton = findViewById(R.id.clear_history_button);
+        btnBack = findViewById(R.id.btn_back);
+    }
+
+    private void initOkHttpClient() {
+        client = new OkHttpClient.Builder()
+                .connectTimeout(60, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
+    }
+
+    private void initDialogueHistory() {
+        dialogueHistory = MistralAIService.getInstance(this).getDialogueHistory();
+    }
+
+    private void displayPreviousMessages() {
+        for (DialogueHistory.DialoguePair pair : dialogueHistory.getHistory()) {
+            addChatMessage(chatContainer, "Пользователь: " + pair.getUserMessage(), true);
+            addChatMessage(chatContainer, "Среда: " + pair.getAssistantResponse(), false);
+        }
+    }
+
+    private void setupButtonClicks() {
+        clearHistoryButton.setOnClickListener(v -> {
+            dialogueHistory.clearHistory();
+            chatContainer.removeAllViews();
+        });
+
+        sendButton.setOnClickListener(v -> {
+            String userMessage = messageInput.getText().toString().trim();
+            if (!userMessage.isEmpty()) {
+                Log.d("ChatActivity", "Пользовательский вопрос: " + userMessage);
+                addChatMessage(chatContainer, "Пользователь: " + userMessage, true);
+                messageInput.setText("");
+
+                // Обработка сообщения пользователя
+                sendMessageToMistralAI(userMessage);
+            }
+        });
+
+        btnBack.setOnClickListener(v -> finish());
+    }
+
+    private void sendMessageToMistralAI(String userMessage) {
+        StringBuilder context = new StringBuilder();
+
+        // Добавляем предыдущие сообщения в контекст
+        for (DialogueHistory.DialoguePair pair : dialogueHistory.getHistory()) {
+            context.append("Пользователь: ").append(pair.getUserMessage()).append("\n");
+            context.append("Среда: ").append(pair.getAssistantResponse()).append("\n");
+        }
+
+        // Добавляем текущий вопрос пользователя
+        context.append("Пользователь: ").append(userMessage);
+
+        JSONObject jsonObject = new JSONObject();
+        try {
+            jsonObject.put("model", "mistral-large-latest"); // Убедитесь, что модель правильная
+            JSONArray messages = new JSONArray();
+            JSONObject userMessageObj = new JSONObject();
+            userMessageObj.put("role", "user");
+            userMessageObj.put("content", context.toString());
+            messages.put(userMessageObj);
+            jsonObject.put("messages", messages);
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+
+        RequestBody body = RequestBody.create(jsonObject.toString(), MEDIA_TYPE_JSON);
+        Request request = new Request.Builder()
+                .url(API_URL)
+                .post(body)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Authorization", "Bearer " + PRIMARY_API_KEY)
+                .build();
+
+        Log.d("ChatActivity", "Вопрос пользователя отправлен в Mistral AI");
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                runOnUiThread(() -> {
+                    Log.e("ChatActivity", "Ошибка отправки запроса: " + e.getMessage());
+                    addChatMessage(chatContainer, "Среда: Ошибка отправки запроса", false);
+                });
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                if (response.isSuccessful() && response.body() != null) {
+                    String responseBody = response.body().string();
+                    String assistantResponse = parseResponse(responseBody);
+                    runOnUiThread(() -> {
+                        addChatMessageWithTypingEffect(chatContainer, "Среда: " + assistantResponse, false);
+                        dialogueHistory.addDialogue(userMessage, assistantResponse);
+                    });
+                } else {
+                    runOnUiThread(() -> {
+                        Log.e("ChatActivity", "Ошибка ответа от сервера: " + response.code() + " " + response.message());
+                        addChatMessage(chatContainer, "Среда: Ошибка ответа от сервера", false);
+                    });
+                }
+            }
+        });
+    }
+
+    private String parseResponse(String responseBody) {
+        try {
+            JSONObject json = new JSONObject(responseBody);
+            JSONArray choices = json.getJSONArray("choices");
+            if (choices.length() > 0) {
+                JSONObject firstChoice = choices.getJSONObject(0);
+                JSONObject message = firstChoice.getJSONObject("message");
+                return message.getString("content");
+            }
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+        return "Ошибка парсинга ответа";
+    }
+
+    private void addChatMessage(LinearLayout container, String message, boolean isUser) {
+        TextView textView = new TextView(this);
+        textView.setText(message);
+        textView.setPadding(16, 8, 16, 8);
+        if (isUser) {
+            textView.setBackgroundResource(R.drawable.chat_bubble_user);
+            textView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            ((LinearLayout.LayoutParams) textView.getLayoutParams()).gravity = Gravity.END;
+        } else {
+            textView.setBackgroundResource(R.drawable.chat_bubble_assistant);
+            textView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            ((LinearLayout.LayoutParams) textView.getLayoutParams()).gravity = Gravity.START;
+        }
+        container.addView(textView);
+    }
+
+    private void addChatMessageWithTypingEffect(LinearLayout container, String message, boolean isUser) {
+        TextView textView = new TextView(this);
+        textView.setPadding(16, 8, 16, 8);
+        if (isUser) {
+            textView.setBackgroundResource(R.drawable.chat_bubble_user);
+            textView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            ((LinearLayout.LayoutParams) textView.getLayoutParams()).gravity = Gravity.END;
+        } else {
+            textView.setBackgroundResource(R.drawable.chat_bubble_assistant);
+            textView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            ((LinearLayout.LayoutParams) textView.getLayoutParams()).gravity = Gravity.START;
+        }
+        container.addView(textView);
+
+        new Handler(Looper.getMainLooper()).post(() -> {
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < message.length(); i++) {
+                builder.append(message.charAt(i));
+                textView.setText(builder.toString());
+
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                }, 10);
+            }
+        });
+    }
+}
