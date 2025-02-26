@@ -1,0 +1,169 @@
+package com.example.myapplication;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
+import android.util.Log;
+
+import androidx.preference.PreferenceManager;
+
+import java.util.Locale;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class TextToSpeechService implements TextToSpeech.OnInitListener {
+    private TextToSpeech textToSpeech;
+    private boolean isInitialized = false;
+    private final Context context;
+    private String userName;
+    private final ExecutorService executorService = Executors.newSingleThreadExecutor(); // Для асинхронных задач
+    private final SharedPreferences prefs;
+
+    public TextToSpeechService(Context context) {
+        this.context = context.getApplicationContext();
+        this.prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        this.userName = prefs.getString("user_name", "");
+        initializeTextToSpeechAsync(); // Асинхронная инициализация
+    }
+
+    /**
+     * Асинхронная инициализация TextToSpeech.
+     */
+    private void initializeTextToSpeechAsync() {
+        executorService.execute(() -> {
+            try {
+                textToSpeech = new TextToSpeech(context, this);
+            } catch (Exception e) {
+                Log.e("TextToSpeech", "Ошибка инициализации TextToSpeech: " + e.getMessage());
+            }
+        });
+    }
+
+    @Override
+    public void onInit(int status) {
+        if (status == TextToSpeech.SUCCESS) {
+            Locale locale = getPreferredLocale();
+            int result = textToSpeech.setLanguage(locale);
+
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.e("TextToSpeech", "Язык не поддерживается: " + locale);
+            } else {
+                isInitialized = true;
+                textToSpeech.setSpeechRate(1.0f); // Нормальная скорость речи
+                setPreferredVoice(); // Установка предпочтительного голоса
+                Log.d("TextToSpeech", "TextToSpeech успешно инициализирован");
+            }
+        } else {
+            Log.e("TextToSpeech", "Ошибка инициализации TextToSpeech");
+        }
+    }
+
+    /**
+     * Устанавливает предпочтительный голос.
+     */
+    private void setPreferredVoice() {
+        Set<Voice> voices = textToSpeech.getVoices();
+        if (voices != null && !voices.isEmpty()) {
+            for (Voice voice : voices) {
+                if (voice.getName().toLowerCase().contains("female") || voice.getName().toLowerCase().contains("женский")) {
+                    textToSpeech.setVoice(voice);
+                    Log.d("TextToSpeech", "Выбран женский голос: " + voice.getName());
+                    break;
+                }
+            }
+        } else {
+            Log.e("TextToSpeech", "Нет доступных голосов");
+        }
+    }
+
+    /**
+     * Озвучивает текст с учетом правильного ударения и пауз.
+     */
+    public void speak(String text) {
+        if (isInitialized && text != null && !text.trim().isEmpty()) {
+            executorService.execute(() -> {
+                try {
+                    String processedText = processTextForTTS(text); // Обработка текста
+                    textToSpeech.speak(processedText, TextToSpeech.QUEUE_FLUSH, null, "tts1");
+                    Log.d("TextToSpeech", "Озвучен текст: " + processedText);
+                } catch (Exception e) {
+                    Log.e("TextToSpeech", "Ошибка воспроизведения речи: " + e.getMessage());
+                }
+            });
+        } else {
+            Log.e("TextToSpeech", "TextToSpeech не инициализирован или текст пуст");
+        }
+    }
+
+    /**
+     * Обрабатывает текст для правильного произношения.
+     */
+    private String processTextForTTS(String text) {
+        // Ударения и фонетические замены
+        text = text.replaceAll("(?i)среда", "средА");
+        text = text.replaceAll("(?i)пример", "примЕр");
+
+        // Добавление пауз через SSML
+        text = "<speak>" + text + "</speak>";
+        return text;
+    }
+
+    /**
+     * Возвращает предпочтительную локаль из настроек.
+     */
+    private Locale getPreferredLocale() {
+        String language = prefs.getString("preferred_language", "ru");
+        String country = prefs.getString("preferred_country", "RU");
+        return new Locale(language, country);
+    }
+
+    /**
+     * Генерирует случайное приветствие.
+     */
+    private String getRandomGreeting() {
+        Random random = new Random();
+        int choice = random.nextInt(100);
+        if (choice < 10) {
+            return userName.isEmpty() ? "Сэр" : userName;
+        } else if (choice < 20) {
+            return "Сэр";
+        } else {
+            return "";
+        }
+    }
+
+    /**
+     * Генерирует ответ с учетом настроек пользователя.
+     */
+    public String generateResponse(String responseText) {
+        boolean enableHumor = prefs.getBoolean("enable_humor", true);
+        String greeting = getRandomGreeting();
+
+        if (!userName.isEmpty() && enableHumor) {
+            String jokeOrFact = FactService.getRandomFactOrJoke();
+            return responseText + " " + greeting + " А пока я ищу ответ, вот вам: " + jokeOrFact;
+        } else if (!userName.isEmpty()) {
+            return responseText + " " + greeting;
+        } else if (enableHumor) {
+            String jokeOrFact = FactService.getRandomFactOrJoke();
+            return responseText + " " + greeting + " А пока я ищу ответ, вот вам: " + jokeOrFact;
+        } else {
+            return responseText + " " + greeting;
+        }
+    }
+
+    /**
+     * Очищает ресурсы TextToSpeech.
+     */
+    public void shutdown() {
+        if (textToSpeech != null) {
+            textToSpeech.stop();
+            textToSpeech.shutdown();
+            Log.d("TextToSpeech", "TextToSpeech остановлен и завершен");
+        }
+        executorService.shutdown();
+    }
+}
