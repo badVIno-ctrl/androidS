@@ -1,0 +1,320 @@
+package com.example.myapplication;
+
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.IBinder;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import android.speech.tts.Voice;
+import android.util.Log;
+
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
+import androidx.preference.PreferenceManager;
+
+import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
+
+public class VoiceService extends Service implements TextToSpeech.OnInitListener {
+    private static final String CHANNEL_ID = "VoiceServiceChannel";
+    private static final String NOTIFICATION_TITLE = "VoiceService is running";
+    private static final String NOTIFICATION_TEXT = "Click to open";
+    private static final int NOTIFICATION_ID = 1;
+    private static final String TTS_UTTERANCE_ID = "tts1";
+    private static final float DEFAULT_TTS_PITCH = 1.0f;
+    private static final float DEFAULT_TTS_SPEED = 1.0f;
+    private static final int DEFAULT_HUMOR_LEVEL = 50;
+    private static final int REQUEST_FOREGROUND_SERVICE_MICROPHONE_PERMISSION = 102;
+    private static final int REQUEST_FOREGROUND_SERVICE_LOCATION_PERMISSION = 103;
+
+    private TextToSpeech textToSpeech;
+    private float ttsPitch = DEFAULT_TTS_PITCH;
+    private float ttsSpeed = DEFAULT_TTS_SPEED;
+    private int humorLevel = DEFAULT_HUMOR_LEVEL;
+    private boolean isSpeaking = false;
+    private boolean isSpeakingJokeOrFact = false;
+    private String queuedText = null;
+    private ExecutorService executorService;
+
+    static {
+        Pattern.compile("[{}?><*#$@!%^&.()\\[\\]-_]");
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        executorService = Executors.newSingleThreadExecutor();
+        loadVoiceSettings();
+        initializeTextToSpeech();
+
+        // Request foreground service microphone permission if not granted
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.FOREGROUND_SERVICE_MICROPHONE)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                    MainActivity.getInstance(),
+                    new String[]{android.Manifest.permission.FOREGROUND_SERVICE_MICROPHONE},
+                    REQUEST_FOREGROUND_SERVICE_MICROPHONE_PERMISSION);
+        } else if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.FOREGROUND_SERVICE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                    MainActivity.getInstance(),
+                    new String[]{android.Manifest.permission.FOREGROUND_SERVICE_LOCATION},
+                    REQUEST_FOREGROUND_SERVICE_LOCATION_PERMISSION);
+        } else {
+            startForegroundService();
+        }
+    }
+
+    private void startForegroundService() {
+        createNotificationChannel();
+        Notification notification = createNotification();
+        startForeground(NOTIFICATION_ID, notification);
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, CHANNEL_ID, NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription("Channel for VoiceService notifications");
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            if (notificationManager != null) {
+                notificationManager.createNotificationChannel(channel);
+            } else {
+                Log.e("VoiceService", "NotificationManager is null");
+            }
+        }
+    }
+
+    private Notification createNotification() {
+        Intent notificationIntent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
+
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(NOTIFICATION_TITLE)
+                .setContentText(NOTIFICATION_TEXT)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .build();
+    }
+
+    private void initializeTextToSpeech() {
+        textToSpeech = new TextToSpeech(this, this);
+    }
+
+    private void speakAnswer(String answer) {
+        if (textToSpeech != null) {
+            textToSpeech.setPitch(ttsPitch);
+            textToSpeech.setSpeechRate(ttsSpeed);
+
+            if (isSpeakingJokeOrFact) {
+                queuedText = answer;
+                Log.d("VoiceService", "Текст добавлен в очередь: " + queuedText);
+            } else {
+                int speakStatus = textToSpeech.speak(answer, TextToSpeech.QUEUE_FLUSH, null, TTS_UTTERANCE_ID);
+                if (speakStatus == TextToSpeech.ERROR) {
+                    Log.e("VoiceService", "Ошибка при попытке озвучить текст.");
+                }
+            }
+        } else {
+            Log.e("VoiceService", "TextToSpeech не инициализирован.");
+        }
+    }
+
+    @Override
+    public void onInit(int status) {
+        if (status == TextToSpeech.SUCCESS) {
+            Locale locale = getPreferredLocale();
+            int result = textToSpeech.setLanguage(locale);
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.e("VoiceService", "Язык не поддерживается");
+            }
+
+            setFemaleVoice();
+            setUtteranceProgressListener();
+        } else {
+            Log.e("VoiceService", "Инициализация TTS не удалась");
+        }
+    }
+
+    private Locale getPreferredLocale() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        String language = prefs.getString("preferred_language", "ru");
+        String country = prefs.getString("preferred_country", "RU");
+        return new Locale(language, country);
+    }
+
+    private void setFemaleVoice() {
+        Set<Voice> voices = textToSpeech.getVoices();
+        if (voices != null && !voices.isEmpty()) {
+            for (Voice voice : voices) {
+                if (voice.getName().contains("female") || voice.getName().contains("женский")) {
+                    textToSpeech.setVoice(voice);
+                    Log.d("VoiceService", "Выбран женский голос: " + voice.getName());
+                    break;
+                }
+            }
+        } else {
+            Log.e("VoiceService", "Нет доступных голосов");
+        }
+    }
+
+    private void setUtteranceProgressListener() {
+        textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+            @Override
+            public void onStart(String utteranceId) {
+                isSpeaking = true;
+                stopListening();
+                StatusUpdateUtil.updateStatus(VoiceService.this, "рассказываю...");
+            }
+
+            @Override
+            public void onDone(String utteranceId) {
+                isSpeaking = false;
+                isSpeakingJokeOrFact = false;
+                startListening();
+                StatusUpdateUtil.updateStatus(VoiceService.this, "слушаю...");
+
+                if (queuedText != null) {
+                    speakAnswer(queuedText);
+                    queuedText = null;
+                }
+            }
+
+            @Override
+            public void onError(String utteranceId) {
+                isSpeaking = false;
+                isSpeakingJokeOrFact = false;
+                startListening();
+                StatusUpdateUtil.updateStatus(VoiceService.this, "слушаю...");
+            }
+        });
+    }
+
+    private void loadVoiceSettings() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        ttsPitch = parsePreferenceValue(prefs.getAll().get("voice_pitch"), DEFAULT_TTS_PITCH);
+        ttsSpeed = parsePreferenceValue(prefs.getAll().get("voice_speed"), DEFAULT_TTS_SPEED);
+        humorLevel = parseHumorLevel(prefs.getAll().get("humor_level"), DEFAULT_HUMOR_LEVEL);
+
+        prefs.registerOnSharedPreferenceChangeListener((sharedPreferences, key) -> {
+            if ("voice_pitch".equals(key)) {
+                ttsPitch = parsePreferenceValue(sharedPreferences.getAll().get("voice_pitch"), DEFAULT_TTS_PITCH);
+            } else if ("voice_speed".equals(key)) {
+                ttsSpeed = parsePreferenceValue(sharedPreferences.getAll().get("voice_speed"), DEFAULT_TTS_SPEED);
+            } else if ("humor_level".equals(key)) {
+                humorLevel = parseHumorLevel(sharedPreferences.getAll().get("humor_level"), DEFAULT_HUMOR_LEVEL);
+            }
+        });
+    }
+
+    private float parsePreferenceValue(Object value, float defaultValue) {
+        if (value instanceof String) {
+            try {
+                return Float.parseFloat((String) value);
+            } catch (NumberFormatException e) {
+                return defaultValue;
+            }
+        } else if (value instanceof Integer) {
+            return ((Integer) value).floatValue();
+        } else if (value instanceof Float) {
+            return (Float) value;
+        } else {
+            return defaultValue;
+        }
+    }
+
+    private int parseHumorLevel(Object value, int defaultValue) {
+        if (value instanceof String) {
+            try {
+                return Integer.parseInt((String) value);
+            } catch (NumberFormatException e) {
+                return defaultValue;
+            }
+        } else if (value instanceof Integer) {
+            return (Integer) value;
+        } else {
+            return defaultValue;
+        }
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    @Override
+    public void onDestroy() {
+        if (textToSpeech != null) {
+            textToSpeech.stop();
+            textToSpeech.shutdown();
+            Log.d("VoiceService", "TextToSpeech остановлен и завершен");
+        }
+        if (executorService != null) {
+            executorService.shutdown();
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            if (intent.hasExtra("text_to_speak")) {
+                String text = intent.getStringExtra("text_to_speak");
+                speakAnswer(text);
+            } else if ("STOP_SPEAKING".equals(intent.getAction())) {
+                stopSpeaking();
+            } else if ("SPEAK_JOKE_OR_FACT".equals(intent.getAction())) {
+                isSpeakingJokeOrFact = true;
+                String command = intent.getStringExtra("command");
+                if ("шутка".equals(command)) {
+                    String joke = FactService.getRandomFactOrJoke();
+                    speakAnswer(joke);
+                } else if ("факт".equals(command)) {
+                    String fact = FactService.getRandomFactOrJoke();
+                    speakAnswer(fact);
+                }
+            }
+        }
+        return START_NOT_STICKY;
+    }
+
+    private void stopSpeaking() {
+        if (textToSpeech != null) {
+            textToSpeech.stop();
+            Log.d("VoiceService", "Озвучивание остановлено");
+            startListening();
+            StatusUpdateUtil.updateStatus(VoiceService.this, "слушаю...");
+        }
+    }
+
+    private void stopListening() {
+        Intent intent = new Intent(this, SpeechRecognitionService.class);
+        intent.setAction("STOP_LISTENING");
+        startService(intent);
+    }
+
+    private void startListening() {
+        Intent intent = new Intent(this, SpeechRecognitionService.class);
+        intent.setAction("RESTART_LISTENING");
+        startService(intent);
+    }
+
+    public boolean isSpeaking() {
+        return isSpeaking;
+    }
+
+    public int getHumorLevel() {
+        return humorLevel;
+    }
+}
