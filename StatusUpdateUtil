@@ -1,0 +1,15 @@
+package com.example.myapplication;
+
+import android.content.Context;
+import android.content.Intent;
+
+public class StatusUpdateUtil {
+
+    private static final String UPDATE_STATUS_ACTION = "com.example.myapplication.UPDATE_STATUS";
+
+    public static void updateStatus(Context context, String status) {
+        Intent broadcastIntent = new Intent(UPDATE_STATUS_ACTION);
+        broadcastIntent.putExtra("status", status);
+        context.sendBroadcast(broadcastIntent);
+    }
+}
