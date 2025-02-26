@@ -1,0 +1,157 @@
+package com.example.myapplication;
+
+import android.content.SharedPreferences;
+import android.widget.TextView;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.TextView;
+
+import androidx.fragment.app.Fragment;
+import androidx.preference.PreferenceManager;
+
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
+
+import androidx.fragment.app.Fragment;
+
+public class HomeFragment extends Fragment implements SharedPreferences.OnSharedPreferenceChangeListener {
+
+    private MainActivity mListener;
+    private TextView tvStatusListening;
+    private TextView tvStatusSpeaking;
+    private TextView tvStatusThinking;
+    private TextView tvStatusConnectionError;
+    private TextView tvStatusError;
+    private FloatingActionButton btnStart;
+    private FloatingActionButton btnStop;
+    private TextView tvWeather;
+
+    public HomeFragment() {
+        // Необходим пустой конструктор
+    }
+
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container,
+                             Bundle savedInstanceState) {
+        // Inflate the layout for this fragment (создаем представление для этого фрагмента)
+        View view = inflater.inflate(R.layout.fragment_home, container, false);
+
+        btnStart = view.findViewById(R.id.btn_start);
+        btnStop = view.findViewById(R.id.btn_stop);
+        tvWeather = view.findViewById(R.id.tv_weather);
+
+        btnStart.setOnClickListener(v -> {
+            Log.d("HomeFragment", "Кнопка 'Старт' нажата");
+            if (mListener != null) {
+                mListener.startListening();
+            }
+        });
+
+        btnStop.setOnClickListener(v -> {
+            Log.d("HomeFragment", "Кнопка 'Стоп' нажата");
+            if (mListener != null) {
+                mListener.stopSpeaking();
+            }
+        });
+
+        view.findViewById(R.id.tv_home).setOnClickListener(v -> {
+            if (mListener != null) {
+                mListener.onHomeFragmentInteraction();
+            }
+        });
+
+        // Загрузка состояния кнопок из SharedPreferences
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getContext());
+        boolean showButtons = prefs.getBoolean("show_control_buttons", true);
+        updateButtonVisibility(showButtons);
+
+        return view;
+    }
+
+    @Override
+    public void onAttach(Context context) {
+        super.onAttach(context);
+        if (context instanceof MainActivity) {
+            mListener = (MainActivity) context;
+        } else {
+            throw new RuntimeException(context.toString()
+                    + " must implement MainActivity");
+        }
+    }
+
+    @Override
+    public void onDetach() {
+        super.onDetach();
+        mListener = null;
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getContext());
+        prefs.registerOnSharedPreferenceChangeListener(this);
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getContext());
+        prefs.unregisterOnSharedPreferenceChangeListener(this);
+    }
+
+    @Override
+    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+        if ("show_control_buttons".equals(key)) {
+            boolean showButtons = sharedPreferences.getBoolean("show_control_buttons", true);
+            updateButtonVisibility(showButtons);
+        }
+    }
+
+    public void updateStatus(String status) {
+        if (tvStatusListening != null && tvStatusSpeaking != null && tvStatusThinking != null && tvStatusConnectionError != null && tvStatusError != null) {
+            tvStatusListening.setVisibility(View.GONE);
+            tvStatusSpeaking.setVisibility(View.GONE);
+            tvStatusThinking.setVisibility(View.GONE);
+            tvStatusConnectionError.setVisibility(View.GONE);
+            tvStatusError.setVisibility(View.GONE);
+
+            switch (status) {
+                case "слушаю...":
+                    tvStatusListening.setVisibility(View.VISIBLE);
+                    break;
+                case "говорю...":
+                    tvStatusSpeaking.setVisibility(View.VISIBLE);
+                    break;
+                case "думаю...":
+                    tvStatusThinking.setVisibility(View.VISIBLE);
+                    break;
+                case "ошибка подключения...":
+                    tvStatusConnectionError.setVisibility(View.VISIBLE);
+                    break;
+                case "ошибка...":
+                    tvStatusError.setVisibility(View.VISIBLE);
+                    break;
+            }
+        }
+    }
+
+    public void updateButtonVisibility(boolean showButtons) {
+        if (showButtons) {
+            btnStart.setVisibility(View.VISIBLE);
+            btnStop.setVisibility(View.VISIBLE);
+        } else {
+            btnStart.setVisibility(View.GONE);
+            btnStop.setVisibility(View.GONE);
+        }
+    }
+
+    public void updateWeather(String weather) {
+        if (tvWeather != null) {
+            tvWeather.setText(weather);
+        }
+    }
+}
