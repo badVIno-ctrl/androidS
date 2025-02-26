@@ -1,0 +1,160 @@
+package com.example.myapplication;
+
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.graphics.PixelFormat;
+import android.os.Build;
+import android.os.IBinder;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.LayoutInflater;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+
+
+public class FloatingButtonService extends Service {
+
+    private WindowManager windowManager;
+    private View floatingButton;
+    private boolean isFloatingButtonVisible = false;
+    private static final String CHANNEL_ID = "FloatingButtonServiceChannel";
+
+    private final BroadcastReceiver broadcastReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null && intent.getAction() != null) {
+                if (intent.getAction().equals("com.example.myapplication.TOGGLE_FLOATING_BUTTON")) {
+                    boolean visible = intent.getBooleanExtra("visible", false);
+                    if (visible) {
+                        showFloatingButton();
+                    } else {
+                        hideFloatingButton();
+                    }
+                }
+            }
+        }
+    };
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.d("FloatingButtonService", "onCreate called");
+
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+
+        // Инициализация плавающей кнопки
+        floatingButton = LayoutInflater.from(this).inflate(R.layout.floating_button, null);
+        final WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
+                        WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+
+        params.gravity = Gravity.TOP | Gravity.END;
+        params.x = 0;
+        params.y = 100;
+
+        // Обработка нажатия на кнопку
+        floatingButton.findViewById(R.id.fab).setOnClickListener(v -> {
+            Log.d("FloatingButtonService", "Floating button clicked");
+            // Запуск прослушивания
+            Intent intent = new Intent(this, SpeechRecognitionService.class);
+            intent.setAction("RESTART_LISTENING");
+            startService(intent);
+            Log.d("FloatingButtonService", "RESTART_LISTENING intent sent to SpeechRecognitionService");
+        });
+
+        // Обработка перемещения кнопки
+        floatingButton.findViewById(R.id.fab).setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_MOVE) {
+                params.x = (int) event.getRawX() - v.getWidth() / 2;
+                params.y = (int) event.getRawY() - v.getHeight() / 2;
+                windowManager.updateViewLayout(floatingButton, params);
+            }
+            return false;
+        });
+
+        // Регистрация BroadcastReceiver
+        IntentFilter filter = new IntentFilter("com.example.myapplication.TOGGLE_FLOATING_BUTTON");
+        registerReceiver(broadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+
+        // Создание уведомления для Foreground Service
+        createNotificationChannel();
+        startForegroundService();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.d("FloatingButtonService", "onStartCommand called");
+        return START_STICKY;
+    }
+
+    private void startForegroundService() {
+
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel serviceChannel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "Floating Button Service Channel",
+                    NotificationManager.IMPORTANCE_DEFAULT
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(serviceChannel);
+        }
+    }
+
+    private void showFloatingButton() {
+        if (!isFloatingButtonVisible) {
+            Log.d("FloatingButtonService", "Showing floating button");
+            final WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
+                            WindowManager.LayoutParams.TYPE_PHONE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                    PixelFormat.TRANSLUCENT);
+
+            params.gravity = Gravity.TOP | Gravity.END;
+            params.x = 0;
+            params.y = 100;
+
+            windowManager.addView(floatingButton, params);
+            isFloatingButtonVisible = true;
+        }
+    }
+
+    private void hideFloatingButton() {
+        if (isFloatingButtonVisible) {
+            Log.d("FloatingButtonService", "Hiding floating button");
+            windowManager.removeView(floatingButton);
+            isFloatingButtonVisible = false;
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        Log.d("FloatingButtonService", "onDestroy called");
+        if (isFloatingButtonVisible) {
+            windowManager.removeView(floatingButton);
+        }
+        unregisterReceiver(broadcastReceiver);
+    }
+}
