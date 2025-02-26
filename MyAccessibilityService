@@ -1,0 +1,142 @@
+package com.example.myapplication;
+
+import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+
+import java.util.List;
+
+public class MyAccessibilityService extends AccessibilityService {
+
+    private static final String TAG = "MyAccessibilityService";
+
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        // Обработка событий доступности
+    }
+
+    @Override
+    public void onInterrupt() {
+        // Обработка прерываний
+    }
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        AccessibilityServiceInfo info = new AccessibilityServiceInfo();
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED | AccessibilityEvent.TYPE_VIEW_CLICKED;
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_SPOKEN;
+        info.notificationTimeout = 100;
+        setServiceInfo(info);
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            if (intent.getAction() != null && intent.getAction().equals("PLAY_FAVORITE_MUSIC")) {
+                playFavoriteMusic();
+            } else {
+                String contactName = intent.getStringExtra("contactName");
+                String messageText = intent.getStringExtra("messageText");
+                if (contactName != null && messageText != null) {
+                    sendTelegramMessage(contactName, messageText);
+                }
+            }
+        }
+        return START_NOT_STICKY;
+    }
+
+    public void sendTelegramMessage(String contactName, String messageText) {
+        // Получаем список контактов
+        String phoneNumber = getPhoneNumberByName(contactName);
+        if (phoneNumber != null) {
+            // Открываем Telegram с указанным контактом
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse("tg://resolve?phone=" + phoneNumber));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+
+            // Задержка перед вставкой сообщения
+            new Handler().postDelayed(() -> {
+                insertTextIntoTelegram(messageText);
+            }, 2000); // Задержка в 2 секунды
+        } else {
+            Log.e(TAG, "Контакт не найден");
+        }
+    }
+
+    private void insertTextIntoTelegram(String messageText) {
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        if (rootNode != null) {
+            List<AccessibilityNodeInfo> editTextNodes = rootNode.findAccessibilityNodeInfosByViewId("com.telegram.messenger:id/chat_message_input_field");
+            if (!editTextNodes.isEmpty()) {
+                AccessibilityNodeInfo editTextNode = editTextNodes.get(0);
+                if (editTextNode != null) {
+                    Bundle arguments = new Bundle();
+                    arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, messageText);
+                    editTextNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
+
+                    // Отправка сообщения
+                    List<AccessibilityNodeInfo> sendButtonNodes = rootNode.findAccessibilityNodeInfosByViewId("com.telegram.messenger:id/send_button");
+                    if (!sendButtonNodes.isEmpty()) {
+                        AccessibilityNodeInfo sendButtonNode = sendButtonNodes.get(0);
+                        if (sendButtonNode != null) {
+                            sendButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public void playFavoriteMusic() {
+        if (isAppInstalled("ru.yandex.music")) {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse("yandexmusic://user/likes"));
+            intent.setPackage("ru.yandex.music");
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+
+            // Задержка перед отправкой команды воспроизведения
+            new Handler().postDelayed(() -> {
+                sendMediaButton(KeyEvent.KEYCODE_MEDIA_PLAY);
+            }, 2000); // Задержка в 2 секунды
+        } else {
+            Log.e(TAG, "Яндекс Музыка не установлена");
+        }
+    }
+
+    private void sendMediaButton(int keyCode) {
+        Intent mediaButtonIntent = new Intent(Intent.ACTION_MEDIA_BUTTON);
+        KeyEvent keyEvent = new KeyEvent(KeyEvent.ACTION_DOWN, keyCode);
+        mediaButtonIntent.putExtra(Intent.EXTRA_KEY_EVENT, keyEvent);
+        sendOrderedBroadcast(mediaButtonIntent, null);
+
+        keyEvent = new KeyEvent(KeyEvent.ACTION_UP, keyCode);
+        mediaButtonIntent.putExtra(Intent.EXTRA_KEY_EVENT, keyEvent);
+        sendOrderedBroadcast(mediaButtonIntent, null);
+    }
+
+    private boolean isAppInstalled(String packageName) {
+        try {
+            getPackageManager().getPackageInfo(packageName, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
+    private String getPhoneNumberByName(String name) {
+        // Реализация получения номера телефона по имени контакта
+        // (аналогично вашему методу getPhoneNumberByName в SpeechRecognitionService)
+        return null;
+    }
+}
