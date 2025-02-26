@@ -1,0 +1,334 @@
+package com.example.myapplication;
+
+import android.app.Service;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.util.Log;
+
+import androidx.annotation.Nullable;
+import androidx.preference.PreferenceManager;
+
+import java.util.ArrayList;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
+
+public class SpeechRecognitionService extends Service implements RecognitionListener {
+
+    private static final String CHANNEL_ID = "SpeechRecognitionServiceChannel";
+    private SpeechRecognizer speechRecognizer;
+    private Intent speechRecognizerIntent;
+    private boolean isRecognizerBusy = false;
+    private boolean isWaitingForResponse = false;
+    private Handler handler = new Handler();
+    private static final long SPEECH_TIMEOUT = 5000; // Уменьшено время ожидания
+    private static final long DELAY_BEFORE_RESPONSE = 500; // Уменьшено время задержки
+    private ExecutorService executorService;
+    private static final Pattern BLACKLIST_PATTERN = Pattern.compile("[{}?><*#$@!%^&.()\\[\\]-_]");
+    private static final String[] BLACKLIST_WORDS = {"badword1", "badword2", "badword3"}; // Добавьте свои слова
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        executorService = Executors.newSingleThreadExecutor();
+        initializeSpeechRecognizer();
+        startForegroundService();
+    }
+
+    private void startForegroundService() {
+        // Implementation for starting the foreground service
+    }
+
+    private void initializeSpeechRecognizer() {
+        if (speechRecognizer == null) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            speechRecognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+
+            speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, getPreferredLanguage());
+            speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE,
+                    this.getPackageName());
+
+            speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 0L);
+            speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 0L);
+
+            speechRecognizer.setRecognitionListener(this);
+
+            // Начинаем прослушивание
+            startListening();
+        } else {
+            Log.e("SpeechRecognizer", "speechRecognizer already initialized");
+        }
+    }
+
+    private String getPreferredLanguage() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        String language = prefs.getString("preferred_language", "ru-RU");
+        return language;
+    }
+
+    private void startListening() {
+        if (speechRecognizer == null) {
+            Log.e("SpeechRecognizer", "speechRecognizer is null, reinitializing");
+            initializeSpeechRecognizer();
+        }
+        if (speechRecognizer != null && !isRecognizerBusy && !isWaitingForResponse) {
+            Log.d("SpeechRecognizer", "Начато прослушивание");
+            speechRecognizer.startListening(speechRecognizerIntent);
+        } else {
+            Log.e("SpeechRecognizer", "speechRecognizer is null or busy or waiting for response");
+        }
+    }
+
+    private void restartListening() {
+        if (speechRecognizer != null) {
+            Log.d("SpeechRecognizer", "Перезапуск прослушивания");
+            speechRecognizer.stopListening();
+            speechRecognizer.startListening(speechRecognizerIntent);
+        } else {
+            Log.e("SpeechRecognizer", "speechRecognizer is null, reinitializing");
+            initializeSpeechRecognizer();
+        }
+    }
+
+    @Override
+    public void onReadyForSpeech(Bundle params) {
+        Log.d("SpeechRecognizer", "Готов к распознаванию речи");
+        isRecognizerBusy = true;
+        startSpeechTimeout();
+    }
+
+    @Override
+    public void onBeginningOfSpeech() {
+        Log.d("SpeechRecognizer", "Пользователь начал говорить");
+        cancelSpeechTimeout();
+    }
+
+    @Override
+    public void onRmsChanged(float rmsdB) {}
+
+    @Override
+    public void onBufferReceived(byte[] buffer) {
+        Log.d("SpeechRecognizer", "Аудиобуфер получен");
+    }
+
+    @Override
+    public void onEndOfSpeech() {
+        Log.d("SpeechRecognizer", "Конец речи");
+    }
+
+    @Override
+    public void onError(int error) {
+        String errorMessage = getErrorText(error);
+        Log.e("SpeechRecognizer", "Ошибка: " + errorMessage);
+
+        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+            Log.d("SpeechRecognizer", "Не удалось распознать речь или время ожидания истекло, продолжаем прослушивание");
+            restartListeningWithDelay();
+        } else if (error == SpeechRecognizer.ERROR_NETWORK || error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) {
+            // StatusUpdateUtil.updateStatus(SpeechRecognitionService.this, "ошибка подключения...");
+            restartListeningWithDelay(); // Автоматический перезапуск при сбоях сети
+        } else {
+            // StatusUpdateUtil.updateStatus(SpeechRecognitionService.this, "ошибка...");
+            restartListeningWithDelay(); // Автоматический перезапуск при других ошибках
+        }
+    }
+
+    @Override
+    public void onResults(Bundle results) {
+        ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+
+        if (matches != null && !matches.isEmpty()) {
+            String recognizedText = matches.get(0);
+            Log.d("SpeechRecognizer", "Распознанный текст: " + recognizedText);
+
+            // Обновляем статус на "думаю..."
+            // StatusUpdateUtil.updateStatus(SpeechRecognitionService.this, "думаю...");
+
+            // Обработка распознанного текста в фоновом потоке
+            executorService.execute(() -> handleRecognizedText(recognizedText));
+        } else {
+            Log.d("SpeechRecognizer", "Результаты распознавания отсутствуют");
+        }
+        isRecognizerBusy = false;
+    }
+
+    @Override
+    public void onPartialResults(Bundle partialResults) {
+        // Этот метод вызывается при получении промежуточных результатов распознавания
+        ArrayList<String> partialMatches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+
+        if (partialMatches != null && !partialMatches.isEmpty()) {
+            String partialText = partialMatches.get(0);
+            Log.d("SpeechRecognizer", "Промежуточный распознанный текст: " + partialText);
+
+            // Можно обновлять UI с промежуточными результатами
+            // updatePartialResult(partialText);
+        }
+    }
+
+    @Override
+    public void onEvent(int eventType, Bundle params) {
+        // Этот метод вызывается при специальных событиях
+        Log.d("SpeechRecognizer", "Событие: " + eventType);
+    }
+
+    private void handleRecognizedText(String recognizedText) {
+        // Фильтрация черных слов и символов
+        recognizedText = filterBlacklistedContent(recognizedText);
+
+        if (recognizedText.toLowerCase().contains("среда")) {
+            String command = recognizedText.substring(recognizedText.toLowerCase().indexOf("среда") + 5).trim();
+            if (!command.isEmpty()) {
+                SpeechProcessor.processCommand(this, command, null);
+            } else {
+                // Если команда "среда" не получила вопрос, перезапускаем прослушивание
+                Log.d("SpeechRecognizer", "Команда 'среда' не получила вопрос, перезапускаем прослушивание");
+                restartListeningWithDelay();
+            }
+        } else {
+            // Если это не команда "среда", продолжаем прослушивание
+            Log.d("SpeechRecognizer", "Команда не распознана, продолжаем прослушивание");
+            restartListeningWithDelay();
+        }
+    }
+
+    private String filterBlacklistedContent(String text) {
+        // Удаление черных символов
+        text = BLACKLIST_PATTERN.matcher(text).replaceAll("");
+
+        // Удаление черных слов
+        for (String word : BLACKLIST_WORDS) {
+            text = text.replaceAll("(?i)\\b" + word + "\\b", "");
+        }
+
+        return text;
+    }
+
+    private String getErrorText(int errorCode) {
+        String message;
+
+        switch (errorCode) {
+            case SpeechRecognizer.ERROR_AUDIO:
+                // Ошибка при записи аудио.
+                message = "Ошибка записи аудио";
+                break;
+            case SpeechRecognizer.ERROR_CLIENT:
+                // Ошибка клиента, например, неверный запрос или отключение микрофона на устройстве.
+                message = "Ошибка клиента";
+                break;
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                // Недостаточно разрешений на использование микрофона.
+                message = "Недостаточно разрешений";
+                break;
+            case SpeechRecognizer.ERROR_NETWORK:
+                // Ошибка сети, возможно проблемы с интернет-соединением.
+                message = "Ошибка сети";
+                break;
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
+                // Тайм-аут сети, например, слишком долгое ожидание ответа от сервера.
+                message = "Тайм-аут сети";
+                break;
+            case SpeechRecognizer.ERROR_NO_MATCH:
+                // Не удалось распознать речь, возможно, из-за плохого качества записи или нерелевантного контента.
+                message = "Не удалось распознать речь";
+                break;
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                // Распознаватель занят другим процессом распознавания.
+                message = "Распознаватель занят";
+                break;
+            case SpeechRecognizer.ERROR_SERVER:
+                // Ошибка на стороне сервера, используемого для обработки речи.
+                message = "Ошибка сервера";
+                break;
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+                // Время ожидания истекло, никакой речи не было обнаружено в заданный период.
+                message = "Время ожидания истекло";
+                break;
+            default:
+                // Неизвестная ошибка, которая не была предусмотрена.
+                message = "Неизвестная ошибка";
+                break;
+        }
+
+        return message;
+    }
+
+    private void startSpeechTimeout() {
+        handler.postDelayed(() -> {
+            if (isRecognizerBusy) {
+                Log.d("SpeechRecognizer", "Время ожидания истекло, перезапускаем прослушивание");
+                restartListeningWithDelay();
+            }
+        }, SPEECH_TIMEOUT);
+    }
+
+    private void cancelSpeechTimeout() {
+        handler.removeCallbacksAndMessages(null);
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        // Освобождаем ресурсы SpeechRecognizer
+        if (speechRecognizer != null) {
+            speechRecognizer.destroy();
+            speechRecognizer = null;
+            Log.d("SpeechRecognizer", "SpeechRecognizer уничтожен");
+        }
+        if (executorService != null) {
+            executorService.shutdown();
+        }
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        // Если ваш сервис не предполагает привязку, верните null
+        return null;
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null) {
+            if ("RESTART_LISTENING".equals(intent.getAction())) {
+                Log.d("SpeechRecognitionService", "RESTART_LISTENING action received");
+                restartListening();
+            } else if ("STOP_LISTENING".equals(intent.getAction())) {
+                Log.d("SpeechRecognitionService", "STOP_LISTENING action received");
+                stopListening();
+            }
+        }
+        return START_STICKY;
+    }
+
+    private void stopListening() {
+        if (speechRecognizer != null) {
+            Log.d("SpeechRecognizer", "Прослушивание остановлено");
+            speechRecognizer.stopListening();
+        } else {
+            Log.e("SpeechRecognizer", "speechRecognizer is null");
+        }
+    }
+
+    private void restartListeningWithDelay() {
+        if (speechRecognizer != null && !isRecognizerBusy && !isWaitingForResponse) {
+            Log.d("SpeechRecognizer", "Перезапуск прослушивания с задержкой");
+            handler.postDelayed(() -> {
+                if (speechRecognizer != null) {
+                    speechRecognizer.stopListening();
+                    speechRecognizer.startListening(speechRecognizerIntent);
+                    Log.d("SpeechRecognizer", "Перезапущено прослушивание");
+                }
+            }, 500); // Задержка в 500 миллисекунд
+        }
+    }
+}
