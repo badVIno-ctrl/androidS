@@ -1,0 +1,364 @@
+package com.example.myapplication;
+
+import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.provider.Settings;
+import android.util.Log;
+import android.view.ViewGroup;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.fragment.app.Fragment;
+import androidx.preference.PreferenceManager;
+
+import com.google.android.material.bottomnavigation.BottomNavigationView;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+
+public class MainActivity extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener {
+    private static final int REQUEST_RECORD_AUDIO_PERMISSION = 200;
+    private static final int REQUEST_CODE_OVERLAY_PERMISSION = 101;
+    private static final int REQUEST_LOCATION_PERMISSION = 300;
+    private static final int REQUEST_NOTIFICATION_PERMISSION = 400;
+    private final String[] permissions = {Manifest.permission.RECORD_AUDIO};
+    private final String[] locationPermissions = {Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION};
+    private BottomNavigationView navView;
+    private String currentFragmentTag;
+    private BroadcastReceiver statusReceiver;
+    private static final String UPDATE_STATUS_ACTION = "com.example.myapplication.UPDATE_STATUS";
+    private static final String CHANNEL_ID = "com.example.myapplication.channel";
+    private ScheduledExecutorService executorService;
+    private String userCity;
+    private WeatherAnnouncer weatherAnnouncer;
+
+    private static MainActivity instance;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        instance = this; // Сохраняем текущий экземпляр
+
+        executorService = Executors.newScheduledThreadPool(1);
+
+        Intent wakeWordIntent = new Intent(this, WakeWordService.class);
+        startService(wakeWordIntent);
+
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
+            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
+            return insets;
+        });
+
+        navView = findViewById(R.id.nav_view);
+        navView.setOnItemSelectedListener(navListener);
+
+        checkPermissions();
+
+        if (savedInstanceState == null) {
+            String fragmentToLoad = getIntent().getStringExtra("fragmentToLoad");
+            if ("HomeFragment".equals(fragmentToLoad)) {
+                getSupportFragmentManager()
+                        .beginTransaction()
+                        .replace(R.id.fragment_container, new HomeFragment(), "HomeFragment")
+                        .commit();
+                currentFragmentTag = "HomeFragment";
+            } else {
+                getSupportFragmentManager()
+                        .beginTransaction()
+                        .replace(R.id.fragment_container, new HomeFragment(), "HomeFragment")
+                        .commit();
+                currentFragmentTag = "HomeFragment";
+            }
+        } else {
+            currentFragmentTag = savedInstanceState.getString("currentFragmentTag");
+            Fragment fragment = getSupportFragmentManager().findFragmentByTag(currentFragmentTag);
+            if (fragment != null) {
+                getSupportFragmentManager()
+                        .beginTransaction()
+                        .replace(R.id.fragment_container, fragment)
+                        .commit();
+            }
+        }
+
+        Intent serviceIntent = new Intent(this, VoiceService.class);
+        startService(serviceIntent);
+
+        Intent intent = new Intent(this, SpeechRecognitionService.class);
+        startService(intent);
+
+        weatherAnnouncer = new WeatherAnnouncer(this);
+        weatherAnnouncer.scheduleWeatherAnnouncement(7, 0); // Например, каждый день в 7:00 утра
+
+        if (Settings.canDrawOverlays(this)) {
+            startFloatingButtonService();
+        } else {
+            Intent overlayIntent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivityForResult(overlayIntent, REQUEST_CODE_OVERLAY_PERMISSION);
+        }
+
+        statusReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent != null && intent.hasExtra("status")) {
+                    String status = intent.getStringExtra("status");
+                    updateStatus(status);
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(UPDATE_STATUS_ACTION);
+        registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+
+        initializeSystemTray();
+
+        SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(this);
+        preferences.registerOnSharedPreferenceChangeListener(this);
+
+        userCity = preferences.getString("user_city", "");
+        if (userCity == null) {
+            userCity = "";
+        }
+
+        // Запуск нового сервиса для записи звука
+        Intent audioRecordingIntent = new Intent(this, AudioRecordingService.class);
+        startService(audioRecordingIntent);
+    }
+
+    public static MainActivity getInstance() {
+        return instance;
+    }
+
+    private void initializeSystemTray() {
+        createNotificationChannel();
+
+        Intent notificationIntent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE);
+
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("App is running")
+                .setContentText("Click to open")
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .build();
+
+        NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (notificationManager != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATION_PERMISSION);
+                    return;
+                }
+            }
+            notificationManager.notify(1, notification);
+        } else {
+            Log.e("MainActivity", "NotificationManager is null");
+        }
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            CharSequence name = "My Channel";
+            String description = "Channel for app notifications";
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, name, importance);
+            channel.setDescription(description);
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            if (notificationManager != null) {
+                notificationManager.createNotificationChannel(channel);
+            } else {
+                Log.e("MainActivity", "NotificationManager is null");
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_OVERLAY_PERMISSION) {
+            if (Settings.canDrawOverlays(this)) {
+                startFloatingButtonService();
+            }
+        }
+    }
+
+    private void startFloatingButtonService() {
+        Intent serviceIntent = new Intent(this, FloatingButtonService.class);
+        startService(serviceIntent);
+    }
+
+    private final BottomNavigationView.OnItemSelectedListener navListener =
+            item -> {
+                Fragment selectedFragment = null;
+                if (item.getItemId() == R.id.navigation_home) {
+                    selectedFragment = new HomeFragment();
+                    currentFragmentTag = "HomeFragment";
+                } else if (item.getItemId() == R.id.navigation_settings) {
+                    selectedFragment = new SettingsFragment();
+                    currentFragmentTag = "SettingsFragment";
+                }
+                if (selectedFragment != null) {
+                    getSupportFragmentManager()
+                            .beginTransaction()
+                            .replace(R.id.fragment_container, selectedFragment, currentFragmentTag)
+                            .commit();
+                }
+                return true;
+            };
+
+    private void checkPermissions() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, permissions, REQUEST_RECORD_AUDIO_PERMISSION);
+        }
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED ||
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                        != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, locationPermissions, REQUEST_LOCATION_PERMISSION);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Разрешение на запись аудио получено.", Toast.LENGTH_SHORT).show();
+                startWakeWordService();
+            } else {
+                Toast.makeText(this, "Разрешение на запись аудио необходимо для работы голосового помощника.", Toast.LENGTH_LONG).show();
+            }
+        } else if (requestCode == REQUEST_LOCATION_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Разрешение на доступ к местоположению получено.", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Разрешение на доступ к местоположению необходимо для работы приложения.", Toast.LENGTH_LONG).show();
+            }
+        } else if (requestCode == REQUEST_NOTIFICATION_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                initializeSystemTray();
+            } else {
+                Toast.makeText(this, "Разрешение на отправку уведомлений необходимо для работы приложения.", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        Intent serviceIntent = new Intent(this, VoiceService.class);
+        stopService(serviceIntent);
+
+        SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(this);
+        preferences.unregisterOnSharedPreferenceChangeListener(this);
+
+        if (executorService != null) {
+            executorService.shutdown();
+        }
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putString("currentFragmentTag", currentFragmentTag);
+    }
+
+    public void onHomeFragmentInteraction() {
+        Intent sredaIntent = new Intent(MainActivity.this, SredaActivity.class);
+        startActivity(sredaIntent);
+    }
+
+    public void updateStatus(String status) {
+        HomeFragment fragment = (HomeFragment) getSupportFragmentManager().findFragmentByTag("HomeFragment");
+        if (fragment != null) {
+            fragment.updateStatus(status);
+        }
+    }
+
+    public void startListening() {
+        Log.d("MainActivity", "Метод startListening вызван");
+        Intent intent = new Intent(this, SpeechRecognitionService.class);
+        intent.setAction("RESTART_LISTENING");
+        startService(intent);
+        Log.d("MainActivity", "RESTART_LISTENING intent sent to SpeechRecognitionService");
+    }
+
+    public void stopSpeaking() {
+        Log.d("MainActivity", "Метод stopSpeaking вызван");
+        Intent intent = new Intent(this, VoiceService.class);
+        intent.setAction("STOP_SPEAKING");
+        startService(intent);
+        Log.d("MainActivity", "STOP_SPEAKING intent sent to VoiceService");
+    }
+
+    private void startWakeWordService() {
+        Intent intent = new Intent(this, WakeWordService.class);
+        startService(intent);
+    }
+
+    @Override
+    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
+        if ("show_control_buttons".equals(key)) {
+            HomeFragment fragment = (HomeFragment) getSupportFragmentManager().findFragmentByTag("HomeFragment");
+            if (fragment != null) {
+                boolean showButtons = sharedPreferences.getBoolean(key, true);
+                fragment.updateButtonVisibility(showButtons);
+            }
+        } else if ("user_city".equals(key)) {
+            userCity = sharedPreferences.getString(key, "");
+            if (userCity == null) {
+                userCity = "";
+            }
+            updateWeather();
+        }
+    }
+
+    private void updateWeather() {
+        HomeFragment fragment = (HomeFragment) getSupportFragmentManager().findFragmentByTag("HomeFragment");
+        if (fragment != null) {
+            if (!userCity.isEmpty()) {
+                new Handler().postDelayed(() -> {
+                    String weatherResponse = MistralAIService.getInstance(this).getWeatherForCity(userCity);
+                    fragment.updateWeather("Сейчас в " + getCityNameWithCorrectEnding(userCity) + " " + weatherResponse);
+                }, 2000);
+            } else {
+                fragment.updateWeather("Город не указан");
+            }
+        }
+    }
+
+    private String getCityNameWithCorrectEnding(String city) {
+        if (city.endsWith("а") || city.endsWith("я")) {
+            return "в " + city;
+        } else if (city.endsWith("е") || city.endsWith("и") || city.endsWith("о")) {
+            return "в " + city;
+        } else {
+            return "в " + city + "е";
+        }
+    }
+}
