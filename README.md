@@ -231,3 +231,8 @@ VoiceService:
 - Ответ передается в TextToSpeechService для озвучивания.
 - VoiceService управляет озвучиванием ответа и взаимодействием с пользователем.
 
+
+https://badvino-ctrl.github.io/Sreda/
+
+
+https://gamma.app/docs/-v9gy89ndkb5fzcc
