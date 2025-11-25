@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
 public class ChatActivity extends AppCompatActivity {
 
     private LinearLayout chatContainer;
-    private EditText messageInput;
+    private EditText messageInput;                                                                                                                                                                                                                                                                                                                       ggg
     private Button sendButton;
     private Button clearHistoryButton;
     private Button btnBack;
